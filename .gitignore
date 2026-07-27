@@ -1,0 +1,36 @@
+# ABB 7 live runtime data
+runtime/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local Python environments
+.venv/
+venv/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Spreadsheet and generated report files
+*.xlsx
+*.xls
+*.pdf
+
+# Local Node-RED export currently contains an embedded password field.
+# Sanitize it before removing this ignore rule and committing the flow.
+abb7nodered.JSON
+
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
