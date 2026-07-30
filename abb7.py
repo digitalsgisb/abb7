@@ -371,19 +371,26 @@ def restore_runtime_state():
     )
     return True
 
-def reset_shift_data(save_checkpoint=True):
+def reset_production_runtime_counters():
     global run_time, loading_time, delay_time, downtime, total_rest_time, planned_stop_time, model_change_time
     global total_machine_time, total_output, hourly_output, hourly_rest_time, lost_time_this_hour, base_time_this_hour, sensor_blocked
     global shift_total_output, total_rejects, current_cycle_time, real_operating_time, total_real_operating_time
-    global current_shift, batch_run_time 
-    
-    print("\n[EVENT] Executing Shift Data Reset...")
+    global batch_run_time, last_sent_hour
+
     run_time = loading_time = delay_time = downtime = 0.0
     total_rest_time = planned_stop_time = model_change_time = total_machine_time = 0.0
     total_output = hourly_output = shift_total_output = total_rejects = 0
     hourly_rest_time = lost_time_this_hour = base_time_this_hour = 0.0
     real_operating_time = total_real_operating_time = current_cycle_time = batch_run_time = 0.0
     sensor_blocked = True
+    last_sent_hour = -1
+
+
+def reset_shift_data(save_checkpoint=True):
+    global current_shift
+
+    print("\n[EVENT] Executing Shift Data Reset...")
+    reset_production_runtime_counters()
 
     # Revert the shift details back to NO PROD
     current_shift = {
@@ -584,7 +591,14 @@ def on_message(client, userdata, msg):
         if topic == MQTT_TOPIC_SHIFT_FORM and is_json:
             previous_shift_id = current_shift.get("shift_id", "NO PROD")
             date_clean = data.get("prodDate", "").replace("-", "")
-            current_shift["shift_id"] = f"{date_clean}-{data.get('shift', '')}-{data.get('productionLine', '').replace(' ', '')}"
+            new_shift_id = f"{date_clean}-{data.get('shift', '')}-{data.get('productionLine', '').replace(' ', '')}"
+            if previous_shift_id != new_shift_id:
+                print(
+                    "[SHIFT] New shift identity detected; resetting production "
+                    "counters before accepting the shift form."
+                )
+                reset_production_runtime_counters()
+            current_shift["shift_id"] = new_shift_id
             
             def parse_ops(op_data):
                 if isinstance(op_data, list): return ", ".join(op_data)
@@ -1046,18 +1060,21 @@ try:
         # 2. Process Data Queue
         process_gsheets_queue()
 
-        # 3. State & Timer Logic
-        base_time_this_hour += loop_delta
-        total_machine_time += loop_delta
+        # 3. State & Timer Logic. Idle time between shifts must never become
+        # first-hour production capacity.
+        active_shift = current_shift.get("shift_id") != "NO PROD"
+        production_loop_delta = loop_delta if active_shift else 0.0
+        base_time_this_hour += production_loop_delta
+        total_machine_time += production_loop_delta
         
         # Only increment real operating time in NORMAL or DOWN modes
         if current_mode in [MODE_NORMAL, MODE_DOWN]:
-            real_operating_time += loop_delta  
-            total_real_operating_time += loop_delta
+            real_operating_time += production_loop_delta
+            total_real_operating_time += production_loop_delta
 
         if current_mode == MODE_NORMAL:
             # ---> NEW: Accumulate time for the batch average
-            batch_run_time += loop_delta 
+            batch_run_time += production_loop_delta
             
             # Non-blocking 2-second sensor stabilization.
             instant_state = 0 if GPIO.input(SENSOR_PIN) == 1 else 1
@@ -1072,7 +1089,7 @@ try:
             current_raw_state = stable_sensor_state
 
             if current_raw_state == 1: # BLOCKED
-                if not sensor_blocked:
+                if not sensor_blocked and active_shift:
                     hourly_output += 1
                     total_output += 1
                     shift_total_output += 1
@@ -1097,35 +1114,35 @@ try:
                 duration = current_time - blockage_start_time
                 if duration < 90:
                     current_status = STATUS_LOADING
-                    loading_time += loop_delta
+                    loading_time += production_loop_delta
                 else:
                     current_status = STATUS_DELAY
-                    delay_time += loop_delta
+                    delay_time += production_loop_delta
 
             else: # UNBLOCKED
                 sensor_blocked = False
                 current_status = STATUS_RUN
-                run_time += loop_delta
+                run_time += production_loop_delta
 
         else:
             # Handle non-normal modes
             if current_mode == MODE_DOWN:
                 current_status = STATUS_DOWN
-                downtime += loop_delta
-                lost_time_this_hour += loop_delta
+                downtime += production_loop_delta
+                lost_time_this_hour += production_loop_delta
             elif current_mode == MODE_REST:
                 current_status = STATUS_REST
-                total_rest_time += loop_delta
-                hourly_rest_time += loop_delta
-                lost_time_this_hour += loop_delta
+                total_rest_time += production_loop_delta
+                hourly_rest_time += production_loop_delta
+                lost_time_this_hour += production_loop_delta
             elif current_mode == MODE_PLANNED_STOP:
                 current_status = STATUS_PLANNED_STOP
-                planned_stop_time += loop_delta
-                lost_time_this_hour += loop_delta
+                planned_stop_time += production_loop_delta
+                lost_time_this_hour += production_loop_delta
             elif current_mode == MODE_MODEL_CHANGE:
                 current_status = STATUS_MODEL_CHANGE
-                model_change_time += loop_delta
-                lost_time_this_hour += loop_delta
+                model_change_time += production_loop_delta
+                lost_time_this_hour += production_loop_delta
 
         # Check for Status Changes to print in Terminal
         if current_status != previous_status:
@@ -1179,5 +1196,4 @@ finally:
     if persistence_store is not None:
         persistence_store.close()
     print("[SYSTEM] Exit complete.")
-
 
