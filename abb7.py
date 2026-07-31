@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 import RPi.GPIO as GPIO
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 import paho.mqtt.client as mqtt
@@ -65,6 +65,7 @@ force_delay = False
 # MQTT & GOOGLE SHEETS CONFIGURATION
 # ==========================================
 LINE_CODE = "ABB7"
+PRODUCTION_DAY_BOUNDARY_HOUR = 8
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
 MQTT_TOPIC_DATA = "sensor2/data"
@@ -402,6 +403,90 @@ def reset_shift_data(save_checkpoint=True):
     }
     if save_checkpoint:
         checkpoint_runtime_state(force=True, reason="shift reset")
+
+
+def production_day_key(moment):
+    """Return the production date for an 08:00-to-08:00 operating day."""
+
+    return (moment - timedelta(hours=PRODUCTION_DAY_BOUNDARY_HOUR)).date()
+
+
+def current_shift_matches_production_day(moment):
+    """Return True only when the active shift belongs to this production day."""
+
+    if current_shift.get("shift_id") == "NO PROD":
+        return False
+
+    shift_date_value = current_shift.get("date")
+    if isinstance(shift_date_value, datetime):
+        shift_date = shift_date_value.date()
+    else:
+        shift_date = None
+        for date_format in ("%Y-%m-%d", "%Y%m%d"):
+            try:
+                shift_date = datetime.strptime(
+                    str(shift_date_value or "").strip(),
+                    date_format,
+                ).date()
+                break
+            except ValueError:
+                continue
+    return shift_date == production_day_key(moment)
+
+
+def force_production_day_reset(moment=None):
+    """Reset production counters at 08:00 without discarding today's Day form."""
+
+    global last_sent_hour
+
+    moment = moment or datetime.now()
+    preserve_day_shift = (
+        str(current_shift.get("shift", "")).strip().upper() == "DAY"
+        and current_shift_matches_production_day(moment)
+    )
+
+    print(
+        "\n[SYSTEM] 08:00 production-day boundary reached. "
+        "Forcing a clean counter reset."
+    )
+    if preserve_day_shift:
+        reset_production_runtime_counters()
+        # Prevent an empty 07:00-08:00 row during the remaining boundary minute.
+        last_sent_hour = moment.hour
+        checkpoint_runtime_state(force=True, reason="08:00 production-day reset")
+        print("[SYSTEM] Today's Day shift configuration was preserved.")
+    else:
+        reset_shift_data()
+        print("[SYSTEM] Previous shift context cleared; waiting for a new shift form.")
+
+
+def reset_stale_shift_after_startup(moment=None):
+    """Clear a restored shift that belongs to an earlier production day."""
+
+    moment = moment or datetime.now()
+    if (
+        current_shift.get("shift_id") != "NO PROD"
+        and not current_shift_matches_production_day(moment)
+    ):
+        scheduled_shift_end = get_current_shift_end_datetime()
+        if scheduled_shift_end is not None and moment >= scheduled_shift_end:
+            print(
+                "\n[SYSTEM] Restored shift passed its scheduled end while the "
+                "tracker was offline. Closing it before counting resumes."
+            )
+            execute_end_shift(
+                hour_slot_override=hour_slot_for_shift_end(scheduled_shift_end),
+                end_reason="MISSED SCHEDULED SHIFT END RECOVERED AT STARTUP",
+            )
+            return True
+        print(
+            "\n[SYSTEM] Restored shift belongs to an earlier production day. "
+            "Its end time is unavailable, so its stale context will be cleared."
+        )
+        reset_shift_data()
+        return True
+    return False
+
 
 def execute_end_shift(hour_slot_override=None, end_reason="MANUAL SHIFT END"):
     ending_shift_id = current_shift["shift_id"]
@@ -873,6 +958,7 @@ def on_message(client, userdata, msg):
         print(f"\n[ERROR] MQTT parsing failed: {e} | Payload: {msg.payload}")
 
 restore_runtime_state()
+reset_stale_shift_after_startup()
 
 mqtt_client = mqtt.Client()
 mqtt_client.on_connect = on_connect
@@ -1023,6 +1109,7 @@ print("=====================================================")
 
 last_loop_time = time.time()
 last_debug_print_time = time.time()
+last_production_day = production_day_key(datetime.now())
 
 try:
     while True:
@@ -1049,7 +1136,15 @@ try:
             )
             continue
 
-        # 1.5 Check for Standard Hourly Push (at minute 00)
+        # 1.5 Hard safety boundary. A missed/invalid night end can never leak
+        # counters or elapsed time into the production day beginning at 08:00.
+        current_production_day = production_day_key(now)
+        if current_production_day != last_production_day:
+            force_production_day_reset(now)
+            last_production_day = current_production_day
+            continue
+
+        # 1.6 Check for Standard Hourly Push (at minute 00)
         if (
             current_shift["shift_id"] != "NO PROD"
             and now.minute == 0
@@ -1196,4 +1291,3 @@ finally:
     if persistence_store is not None:
         persistence_store.close()
     print("[SYSTEM] Exit complete.")
-
