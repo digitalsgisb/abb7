@@ -88,7 +88,7 @@ MQTT_TOPIC_LIVE_HOURLY = "smartchecksheet/hourly"
 MQTT_TOPIC_LIVE_SNAPSHOT = "smartchecksheet/live"
 
 # Google Sheets Web App URL
-WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyh8cXOCpU3TJciLMMzHVnZu5mE5gBypjRguNO8HDXKja3BU2qfw_S02zuRVbpjaAdyOw/exec"
+WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyU_LinljdxsOlPq5buYHSbVcpS5QBRlOVLjWxYYlT1liOuE0Wp0KaUyg78pSPX7nfV/exec"
 
 # SQLite recovery/outbox configuration. The API sender is intentionally OFF
 # until ABB7_API_ENABLED=true and the future Express endpoint is configured.
