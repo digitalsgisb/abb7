@@ -66,6 +66,7 @@ force_delay = False
 # ==========================================
 LINE_CODE = "ABB7"
 PRODUCTION_DAY_BOUNDARY_HOUR = 8
+SHIFT_ENTRY_GRACE_MINUTES = 45
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
 MQTT_TOPIC_DATA = "sensor2/data"
@@ -114,6 +115,7 @@ STATUS_REST = 3
 STATUS_DOWN = 4
 STATUS_PLANNED_STOP = 5
 STATUS_MODEL_CHANGE = 6
+STATUS_WAITING_FOR_SHIFT = 7
 
 MODE_NORMAL = "NORMAL"
 MODE_DOWN = "DOWN"
@@ -128,6 +130,8 @@ last_sent_hour = -1
 last_live_snapshot_publish = 0.0
 last_runtime_checkpoint = 0.0
 recovered_from_sqlite = False
+shift_entry_window_started_at = None
+shift_entry_window_ends_at = None
 
 # Initialized with "NO PROD" so it displays correctly on startup
 current_shift = {
@@ -207,6 +211,10 @@ def build_runtime_snapshot():
         "last_sent_hour": last_sent_hour,
         "sensor_blocked": sensor_blocked,
         "force_delay": force_delay,
+        "shift_entry_window": {
+            "started_at": shift_entry_window_started_at,
+            "ends_at": shift_entry_window_ends_at,
+        },
         "counters": {
             "total_output": total_output,
             "shift_total_output": shift_total_output,
@@ -307,6 +315,7 @@ def restore_runtime_state():
     global current_cycle_time, current_mode, current_status
     global last_sent_hour, current_shift
     global sensor_blocked, force_delay, recovered_from_sqlite
+    global shift_entry_window_started_at, shift_entry_window_ends_at
 
     if persistence_store is None:
         return False
@@ -329,6 +338,7 @@ def restore_runtime_state():
     counters = snapshot.get("counters", {})
     timers = snapshot.get("timers", {})
     cycle = snapshot.get("cycle", {})
+    entry_window = snapshot.get("shift_entry_window", {})
 
     total_output = int(counters.get("total_output", 0))
     shift_total_output = int(counters.get("shift_total_output", 0))
@@ -355,6 +365,8 @@ def restore_runtime_state():
     current_status = int(snapshot.get("current_status", STATUS_RUN))
     last_sent_hour = int(snapshot.get("last_sent_hour", -1))
     force_delay = bool(snapshot.get("force_delay", False))
+    shift_entry_window_started_at = entry_window.get("started_at")
+    shift_entry_window_ends_at = entry_window.get("ends_at")
 
     # Starting blocked avoids counting a product twice when the sensor happens
     # to be physically blocked during the reboot.
@@ -387,11 +399,76 @@ def reset_production_runtime_counters():
     last_sent_hour = -1
 
 
+def parse_shift_entry_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def shift_entry_window_is_active(moment=None):
+    moment = moment or datetime.now()
+    window_end = parse_shift_entry_datetime(shift_entry_window_ends_at)
+    return window_end is not None and moment < window_end
+
+
+def clear_shift_entry_window(save_checkpoint=False):
+    global shift_entry_window_started_at, shift_entry_window_ends_at
+
+    shift_entry_window_started_at = None
+    shift_entry_window_ends_at = None
+    if save_checkpoint:
+        checkpoint_runtime_state(force=True, reason="shift entry window cleared")
+
+
+def start_shift_entry_window(boundary_time):
+    """Temporarily buffer production while waiting for the next shift form."""
+
+    global shift_entry_window_started_at, shift_entry_window_ends_at
+
+    window_end = boundary_time + timedelta(minutes=SHIFT_ENTRY_GRACE_MINUTES)
+    if datetime.now() >= window_end:
+        clear_shift_entry_window()
+        return False
+
+    shift_entry_window_started_at = boundary_time.isoformat()
+    shift_entry_window_ends_at = window_end.isoformat()
+    checkpoint_runtime_state(force=True, reason="shift entry window started")
+    print(
+        "[SHIFT BUFFER] Waiting for the next shift form until "
+        f"{window_end.strftime('%Y-%m-%d %I:%M %p')}. "
+        "Production counters and timers are being buffered."
+    )
+    return True
+
+
+def expire_shift_entry_window(moment=None):
+    """Discard unassigned production when the 45-minute entry window expires."""
+
+    moment = moment or datetime.now()
+    window_end = parse_shift_entry_datetime(shift_entry_window_ends_at)
+    if window_end is None or moment < window_end:
+        return False
+
+    print(
+        "[SHIFT BUFFER] No shift form was received within "
+        f"{SHIFT_ENTRY_GRACE_MINUTES} minutes. "
+        f"Discarding {shift_total_output} unassigned product(s) and returning to NO PROD."
+    )
+    reset_production_runtime_counters()
+    clear_shift_entry_window()
+    checkpoint_runtime_state(force=True, reason="shift entry window expired")
+    return True
+
+
 def reset_shift_data(save_checkpoint=True):
     global current_shift
 
     print("\n[EVENT] Executing Shift Data Reset...")
     reset_production_runtime_counters()
+    clear_shift_entry_window()
 
     # Revert the shift details back to NO PROD
     current_shift = {
@@ -440,6 +517,24 @@ def force_production_day_reset(moment=None):
     global last_sent_hour
 
     moment = moment or datetime.now()
+    boundary_time = moment.replace(
+        hour=PRODUCTION_DAY_BOUNDARY_HOUR,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    buffered_from = parse_shift_entry_datetime(shift_entry_window_started_at)
+    if (
+        current_shift.get("shift_id") == "NO PROD"
+        and shift_entry_window_is_active(moment)
+        and buffered_from == boundary_time
+    ):
+        print(
+            "\n[SYSTEM] 08:00 production-day boundary was already handled "
+            "by the active shift-entry buffer."
+        )
+        return
+
     preserve_day_shift = (
         str(current_shift.get("shift", "")).strip().upper() == "DAY"
         and current_shift_matches_production_day(moment)
@@ -451,12 +546,14 @@ def force_production_day_reset(moment=None):
     )
     if preserve_day_shift:
         reset_production_runtime_counters()
+        clear_shift_entry_window()
         # Prevent an empty 07:00-08:00 row during the remaining boundary minute.
         last_sent_hour = moment.hour
         checkpoint_runtime_state(force=True, reason="08:00 production-day reset")
         print("[SYSTEM] Today's Day shift configuration was preserved.")
     else:
         reset_shift_data()
+        start_shift_entry_window(boundary_time)
         print("[SYSTEM] Previous shift context cleared; waiting for a new shift form.")
 
 
@@ -478,6 +575,7 @@ def reset_stale_shift_after_startup(moment=None):
                 hour_slot_override=hour_slot_for_shift_end(scheduled_shift_end),
                 end_reason="MISSED SCHEDULED SHIFT END RECOVERED AT STARTUP",
             )
+            start_shift_entry_window(scheduled_shift_end)
             return True
         print(
             "\n[SYSTEM] Restored shift belongs to an earlier production day. "
@@ -674,15 +772,19 @@ def on_message(client, userdata, msg):
         except ValueError: data = payload_str; is_json = False
 
         if topic == MQTT_TOPIC_SHIFT_FORM and is_json:
+            expire_shift_entry_window()
             previous_shift_id = current_shift.get("shift_id", "NO PROD")
             date_clean = data.get("prodDate", "").replace("-", "")
             new_shift_id = f"{date_clean}-{data.get('shift', '')}-{data.get('productionLine', '').replace(' ', '')}"
-            if previous_shift_id != new_shift_id:
+            if previous_shift_id != "NO PROD" and previous_shift_id != new_shift_id:
                 print(
-                    "[SHIFT] New shift identity detected; resetting production "
-                    "counters before accepting the shift form."
+                    "[SHIFT WARNING] A different shift is already active. "
+                    "The new form was rejected so active production counters are preserved."
                 )
-                reset_production_runtime_counters()
+                return
+            adopting_shift_buffer = (
+                previous_shift_id == "NO PROD" and shift_entry_window_is_active()
+            )
             current_shift["shift_id"] = new_shift_id
             
             def parse_ops(op_data):
@@ -718,6 +820,13 @@ def on_message(client, userdata, msg):
             except ValueError as exc:
                 current_shift["scheduled_end_at"] = None
                 print(f"[SCHEDULE ERROR] Automatic shift end disabled: {exc}")
+
+            if adopting_shift_buffer:
+                clear_shift_entry_window()
+                print(
+                    "[SHIFT BUFFER] Shift form accepted. Buffered production "
+                    f"was assigned to {current_shift['shift_id']} without resetting counters."
+                )
 
             print(f"\n[MQTT EVENT] New Shift Started: {current_shift['shift_id']}")
             row_data = [
@@ -1069,6 +1178,11 @@ def publish_live_data():
         "hour_available_minutes": round(live_available_minutes, 2),
         "total_reject": total_rejects,                     # Dashboard Rejects Only
         "recovered_from_sqlite": recovered_from_sqlite,
+        "shift_entry_status": (
+            "WAITING_FOR_SHIFT" if shift_entry_window_is_active() else
+            ("ACTIVE" if current_shift["shift_id"] != "NO PROD" else "NO_PROD")
+        ),
+        "shift_entry_window_ends_at": shift_entry_window_ends_at,
         
         # Cycle metrics
         "current_cycle_time": round(current_cycle_time, 2), 
@@ -1119,6 +1233,10 @@ try:
         
         now = datetime.now()
 
+        # A form that never arrives must not leave temporary production in the
+        # official counters after the grace window.
+        expire_shift_entry_window(now)
+
         # 1. End the active shift using its Node-RED working time. This check
         # comes before the ordinary hourly push so an exact 08:00/20:00 end
         # creates one final 07:00-08:00/19:00-20:00 row, not a duplicate.
@@ -1134,6 +1252,7 @@ try:
                 hour_slot_override=final_slot,
                 end_reason="SCHEDULED SHIFT END",
             )
+            start_shift_entry_window(scheduled_shift_end)
             continue
 
         # 1.5 Hard safety boundary. A missed/invalid night end can never leak
@@ -1158,7 +1277,9 @@ try:
         # 3. State & Timer Logic. Idle time between shifts must never become
         # first-hour production capacity.
         active_shift = current_shift.get("shift_id") != "NO PROD"
-        production_loop_delta = loop_delta if active_shift else 0.0
+        buffering_shift_entry = shift_entry_window_is_active(now)
+        production_tracking_enabled = active_shift or buffering_shift_entry
+        production_loop_delta = loop_delta if production_tracking_enabled else 0.0
         base_time_this_hour += production_loop_delta
         total_machine_time += production_loop_delta
         
@@ -1184,7 +1305,7 @@ try:
             current_raw_state = stable_sensor_state
 
             if current_raw_state == 1: # BLOCKED
-                if not sensor_blocked and active_shift:
+                if not sensor_blocked and production_tracking_enabled:
                     hourly_output += 1
                     total_output += 1
                     shift_total_output += 1
@@ -1239,9 +1360,12 @@ try:
                 model_change_time += production_loop_delta
                 lost_time_this_hour += production_loop_delta
 
+        if buffering_shift_entry:
+            current_status = STATUS_WAITING_FOR_SHIFT
+
         # Check for Status Changes to print in Terminal
         if current_status != previous_status:
-            status_names = {0: "RUN", 1: "LOADING", 2: "DELAY", 3: "REST", 4: "DOWN", 5: "PLANNED STOP", 6: "MODEL CHANGE"}
+            status_names = {0: "RUN", 1: "LOADING", 2: "DELAY", 3: "REST", 4: "DOWN", 5: "PLANNED STOP", 6: "MODEL CHANGE", 7: "WAITING FOR SHIFT"}
             print(f"\n[STATE CHANGE] Sensor/Machine Status changed: {status_names.get(previous_status)} -> {status_names.get(current_status)}")
             previous_status = current_status
 

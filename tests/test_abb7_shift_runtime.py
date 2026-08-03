@@ -71,7 +71,13 @@ def load_boundary_functions(current_shift):
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name in function_names
     ]
-    calls = {"counter_reset": 0, "shift_reset": 0, "checkpoint": 0}
+    calls = {
+        "counter_reset": 0,
+        "shift_reset": 0,
+        "checkpoint": 0,
+        "window_clear": 0,
+        "window_start": 0,
+    }
 
     def reset_counters():
         calls["counter_reset"] += 1
@@ -82,14 +88,67 @@ def load_boundary_functions(current_shift):
     def checkpoint(**_kwargs):
         calls["checkpoint"] += 1
 
+    def clear_window(**_kwargs):
+        calls["window_clear"] += 1
+
+    def start_window(_boundary_time):
+        calls["window_start"] += 1
+        return True
+
     namespace = {
         "datetime": datetime,
         "timedelta": timedelta,
         "PRODUCTION_DAY_BOUNDARY_HOUR": 8,
         "current_shift": current_shift,
         "last_sent_hour": -1,
+        "shift_entry_window_started_at": None,
+        "parse_shift_entry_datetime": lambda _value: None,
+        "shift_entry_window_is_active": lambda _moment=None: False,
+        "clear_shift_entry_window": clear_window,
+        "start_shift_entry_window": start_window,
         "reset_production_runtime_counters": reset_counters,
         "reset_shift_data": reset_shift,
+        "checkpoint_runtime_state": checkpoint,
+    }
+    exec(
+        compile(ast.Module(body=functions, type_ignores=[]), SCRIPT_PATH, "exec"),
+        namespace,
+    )
+    return source, namespace, calls
+
+
+def load_entry_window_functions():
+    with open(SCRIPT_PATH, encoding="utf-8") as script_file:
+        source = script_file.read()
+    tree = ast.parse(source, filename=SCRIPT_PATH)
+    function_names = {
+        "parse_shift_entry_datetime",
+        "shift_entry_window_is_active",
+        "clear_shift_entry_window",
+        "start_shift_entry_window",
+        "expire_shift_entry_window",
+    }
+    functions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in function_names
+    ]
+    calls = {"counter_reset": 0, "checkpoint": 0}
+
+    def reset_counters():
+        calls["counter_reset"] += 1
+
+    def checkpoint(**_kwargs):
+        calls["checkpoint"] += 1
+
+    namespace = {
+        "datetime": datetime,
+        "timedelta": timedelta,
+        "SHIFT_ENTRY_GRACE_MINUTES": 45,
+        "shift_entry_window_started_at": None,
+        "shift_entry_window_ends_at": None,
+        "shift_total_output": 5,
+        "reset_production_runtime_counters": reset_counters,
         "checkpoint_runtime_state": checkpoint,
     }
     exec(
@@ -115,11 +174,46 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
         source, _ = load_reset_function()
 
         self.assertIn(
-            "production_loop_delta = loop_delta if active_shift else 0.0",
+            "production_loop_delta = loop_delta if production_tracking_enabled else 0.0",
             source,
         )
-        self.assertIn("if not sensor_blocked and active_shift:", source)
-        self.assertIn("if previous_shift_id != new_shift_id:", source)
+        self.assertIn("if not sensor_blocked and production_tracking_enabled:", source)
+        self.assertIn(
+            'previous_shift_id != "NO PROD" and previous_shift_id != new_shift_id',
+            source,
+        )
+        self.assertIn("STATUS_WAITING_FOR_SHIFT = 7", source)
+
+    def test_shift_entry_window_buffers_for_exactly_45_minutes(self):
+        _, namespace, calls = load_entry_window_functions()
+        boundary = datetime.now()
+
+        self.assertTrue(namespace["start_shift_entry_window"](boundary))
+        self.assertTrue(
+            namespace["shift_entry_window_is_active"](
+                boundary + timedelta(minutes=44, seconds=59)
+            )
+        )
+        self.assertFalse(
+            namespace["shift_entry_window_is_active"](
+                boundary + timedelta(minutes=45)
+            )
+        )
+        self.assertEqual(calls["counter_reset"], 0)
+
+    def test_expired_shift_entry_window_discards_unassigned_counts(self):
+        _, namespace, calls = load_entry_window_functions()
+        boundary = datetime.now()
+        namespace["start_shift_entry_window"](boundary)
+
+        self.assertTrue(
+            namespace["expire_shift_entry_window"](
+                boundary + timedelta(minutes=45)
+            )
+        )
+        self.assertEqual(calls["counter_reset"], 1)
+        self.assertIsNone(namespace["shift_entry_window_started_at"])
+        self.assertIsNone(namespace["shift_entry_window_ends_at"])
 
     def test_production_day_changes_at_0800(self):
         _, namespace, _ = load_boundary_functions({"shift_id": "NO PROD"})
@@ -143,6 +237,8 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
         self.assertEqual(calls["counter_reset"], 1)
         self.assertEqual(calls["shift_reset"], 0)
         self.assertEqual(calls["checkpoint"], 1)
+        self.assertEqual(calls["window_clear"], 1)
+        self.assertEqual(calls["window_start"], 0)
         self.assertEqual(namespace["last_sent_hour"], 8)
 
     def test_boundary_clears_previous_night_context(self):
@@ -157,6 +253,7 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
 
         self.assertEqual(calls["counter_reset"], 0)
         self.assertEqual(calls["shift_reset"], 1)
+        self.assertEqual(calls["window_start"], 1)
         self.assertIn("current_production_day != last_production_day", source)
         self.assertIn("reset_stale_shift_after_startup()", source)
 
