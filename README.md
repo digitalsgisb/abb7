@@ -282,3 +282,12 @@ flow's routing and preview behavior without contacting production services.
 Keep the original export as a backup. Updating only Python does not add the new
 Test mode or routing to the dashboard. Pending-state recovery requires a working,
 writable SQLite database.
+
+## Home and automatic shift-end navigation
+
+At shift end Python broadcasts the end decision. Node-RED returns connected
+operators to **Shift Details**, alongside the existing dashboard cleanup.
+The Home button on **Hourly Checksheet** opens Shift Details. Home on Shift
+Details, Condition, Reject, and Downtime opens Hourly Checksheet. Home only
+navigates; it does not submit a form, change machine mode, or reset production.
+Regenerate and deploy your private Node-RED export to apply these buttons.

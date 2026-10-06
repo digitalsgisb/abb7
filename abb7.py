@@ -772,7 +772,7 @@ def on_connect(client, userdata, flags, rc):
     print(f"\n[SYSTEM] Connected to MQTT Broker. Ready to receive commands.")
 
 
-def apply_shift_form(data):
+def apply_shift_form(data, navigate_to_hourly=True):
     """Activate a validated form, preserving a matching late-entry buffer."""
     global current_shift
     expire_shift_entry_window()
@@ -860,21 +860,22 @@ def apply_shift_form(data):
         },
         event_id=data.get("event_id"),
     )
-    publish_shift_form_result("active", data)
+    publish_shift_form_result("active", data, navigate_to_hourly=navigate_to_hourly)
     return True
 
 
-def publish_shift_form_result(status, data, message=""):
+def publish_shift_form_result(status, data, message="", navigate_to_hourly=True):
     """Acknowledge forms so Node-RED only writes accepted production forms."""
     result = {"status": status, "source_payload": data, "message": message,
-              "active_shift": dict(current_shift), "pending_shift": pending_shift_form}
+              "active_shift": dict(current_shift), "pending_shift": pending_shift_form,
+              "navigate_to_hourly": navigate_to_hourly}
     try:
         mqtt_client.publish(f"{LINE_CODE.lower()}/shift_form_result", json.dumps(result), qos=1)
     except Exception as exc:
         print(f"[SHIFT ACK ERROR] {exc}")
 
 
-def receive_shift_form(data, moment=None):
+def receive_shift_form(data, moment=None, navigate_to_hourly=True):
     global pending_shift_form, last_production_day
     moment = moment or datetime.now()
     with shift_state_lock:
@@ -932,7 +933,7 @@ def receive_shift_form(data, moment=None):
             pending_id = f"{pending_shift_form.get('prodDate', '').replace('-', '')}-{pending_shift_form.get('shift', '')}-{pending_shift_form.get('productionLine', '').replace(' ', '')}"
             if pending_id == new_id:
                 pending_shift_form = None
-        return apply_shift_form(data)
+        return apply_shift_form(data, navigate_to_hourly=navigate_to_hourly)
 
 
 def advance_shift_schedule(moment=None):
@@ -965,7 +966,7 @@ def advance_shift_schedule(moment=None):
                     checkpoint_runtime_state(force=True, reason="expired pending shift discarded")
                     publish_shift_form_result("rejected", form, "Pending shift expired while offline.")
                 elif moment >= start:
-                    if not receive_shift_form(form, moment):
+                    if not receive_shift_form(form, moment, navigate_to_hourly=False):
                         pending_shift_form = None
                         checkpoint_runtime_state(force=True, reason="conflicting pending shift discarded")
                     changed = True

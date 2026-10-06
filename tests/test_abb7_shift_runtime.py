@@ -196,7 +196,7 @@ def load_shift_form_runtime():
         "calculate_shift_start_datetime": __import__("abb7_shift_schedule").calculate_shift_start_datetime,
         "pending_shift_form": None,
         "shift_state_lock": threading.RLock(),
-        "publish_shift_form_result": lambda *args: None,
+        "publish_shift_form_result": lambda *args, **kwargs: None,
         "hour_slot_for_shift_end": __import__("abb7_shift_schedule").hour_slot_for_shift_end,
         "last_production_day": datetime(2026, 10, 6, 8).date(),
         "calculate_shift_end_datetime": __import__("abb7_shift_schedule").calculate_shift_end_datetime,
@@ -373,6 +373,8 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
 
     def test_early_night_form_waits_for_day_handover(self):
         ns, clock, events = load_shift_form_runtime()
+        acknowledgements = []
+        ns["publish_shift_form_result"] = lambda *args, **kwargs: acknowledgements.append((args, kwargs))
         submit_shift_form(ns)
         clock["now"] = datetime(2026, 10, 6, 15, 32)
         ns.update(total_machine_time=500, shift_total_output=8)
@@ -390,6 +392,7 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
         self.assertEqual(ns["shift_total_output"], 0)
         self.assertIsNone(ns["pending_shift_form"])
         self.assertEqual(len(events), 2)
+        self.assertFalse(acknowledgements[-1][1]["navigate_to_hourly"])
         ns["advance_shift_schedule"](clock["now"])
         self.assertEqual(len(events), 2)
 

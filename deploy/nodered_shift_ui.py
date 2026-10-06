@@ -16,7 +16,7 @@ if (p.status === 'ended') {
 }
 if (p.status !== 'active') return [null, feedback, null, null];
 return [{topic: 'form_data', payload: p.source_payload}, feedback,
-        {topic: 'navigate', payload: {page: 'Hourly Checksheet'}}, null];
+        p.navigate_to_hourly === false ? null : {topic: 'navigate', payload: {page: 'Hourly Checksheet'}}, null];
 """
 
 TELEMETRY = """const p = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;
@@ -35,6 +35,9 @@ def add_shift_ui(nodes):
     line = 'abb7' if 'ABB7' in api['func'] else 'abb2'
     prefix = line + '-shift-'
     if any(n['id'] == prefix + 'gate' for n in nodes):
+        ack = next(n for n in nodes if n.get('name') == 'Apply accepted shift only')
+        if 'p.navigate_to_hourly' not in ack['func']:
+            ack['func'] = ack['func'].replace("{topic: 'navigate', payload: {page: 'Hourly Checksheet'}}, null];", "p.navigate_to_hourly === false ? null : {topic: 'navigate', payload: {page: 'Hourly Checksheet'}}, null];")
         next(n for n in nodes if n.get('name') == 'check if shift end')['func'] = '// Shift end notifications now come from Python.\nreturn null;\n'
         next(n for n in nodes if n.get('name') == 'Set Shift End Time')['func'] = 'return msg;'
         return nodes

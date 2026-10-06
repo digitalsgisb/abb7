@@ -49,8 +49,30 @@ async function main() {
   const accepted = decide({payload: {status: 'active', source_payload: messages[0].payload}});
   assert.equal(accepted[0].topic, 'form_data');
   assert.equal(accepted[2].topic, 'navigate');
+  assert.equal(decide({payload: {status: 'active', source_payload: {}, navigate_to_hourly: false}})[2], null);
   const ended = decide({payload: {status: 'ended'}});
   assert.equal(ended[3].topic, 'trigger_auto_end_shift');
+  const detailPage = nodes.find(n => n.type === 'ui-page' && n.name === 'Shift Details');
+  const hourlyPage = nodes.find(n => n.type === 'ui-page' && n.name === 'Hourly Checksheet');
+  assert.equal(ended[4].payload.page, detailPage.path);
+  const ackNode = named('Apply accepted shift only');
+  assert.equal(ackNode.outputs, ackNode.wires.length);
+  assert.equal(byId.get(ackNode.wires[4][0]).type, 'ui-control');
+  for (const name of ['main', 'front', 'Condition', 'Reject', 'Downtime Log UI']) {
+    const template = nodes.find(n => n.type === 'ui-template' && n.name === name);
+    assert(template.format.includes('mdi-home'), `No Home button on ${name}`);
+    const routerNode = byId.get(template.wires[0][0]);
+    const routeHome = new Function('msg', routerNode.func);
+    const destination = name === 'main' ? detailPage.path : hourlyPage.path;
+    const homeMessage = {topic: 'go_home', payload: {}, _client: {socketId: 'example'}};
+    const homeResult = routeHome(homeMessage);
+    assert.equal(homeResult[0].payload.page, destination);
+    assert.equal(homeResult[0]._client.socketId, 'example');
+    assert.equal(homeResult[1], null, 'Home action reached production handlers');
+    assert.equal(byId.get(routerNode.wires[0][0]).type, 'ui-control');
+    const normalMessage = {topic: 'form_data', payload: {shift: 'Day'}};
+    assert.deepEqual(routeHome(normalMessage), [null, normalMessage]);
+  }
   // There must be no independent clock capable of resetting the UI or server session.
   assert.equal(new Function('msg', named('check if shift end').func)({}), null);
   const out = nodes.find(n => n.type === 'mqtt out' && n.topic === 'nodered/newshift');
@@ -66,7 +88,7 @@ async function main() {
   assert(state.shiftResetAt.includes('16:15'));
   assert(state.pendingShiftLabel.includes('Night'));
   assert(state.storageWarning.includes('SQLite'));
-  console.log('PASS: preview isolation, accepted-only writes, resend, runtime display, JS syntax and flow wiring');
+  console.log('PASS: preview isolation, accepted-only writes, resend, runtime display, Home routes, shift-end navigation, JS syntax and flow wiring');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
