@@ -1,4 +1,6 @@
 import ast
+import json
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 import os
 import unittest
@@ -144,7 +146,12 @@ def load_entry_window_functions():
     namespace = {
         "datetime": datetime,
         "timedelta": timedelta,
-        "SHIFT_ENTRY_GRACE_MINUTES": 45,
+        "SHIFT_ENTRY_GRACE_MINUTES": next(
+            node.value.value for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "SHIFT_ENTRY_GRACE_MINUTES"
+                    for target in node.targets)
+        ),
         "shift_entry_window_started_at": None,
         "shift_entry_window_ends_at": None,
         "shift_total_output": 5,
@@ -156,6 +163,51 @@ def load_entry_window_functions():
         namespace,
     )
     return source, namespace, calls
+
+
+def load_shift_form_runtime():
+    source, namespace, _ = load_entry_window_functions()
+    tree = ast.parse(source, filename=SCRIPT_PATH)
+    clock = {"now": datetime(2026, 10, 6, 8, 0)}
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls):
+            return clock["now"]
+
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                 and node.name in {"on_message", "reset_shift_data",
+                                   "reset_production_runtime_counters", "production_day_key",
+                                   "current_shift_matches_production_day",
+                                   "force_production_day_reset"}]
+    constants = [node for node in tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name)
+                         and (target.id.startswith("MQTT_TOPIC_") or target.id == "LINE_CODE")
+                         for target in node.targets)]
+    events = []
+    namespace.update({
+        "datetime": Clock,
+        "PRODUCTION_DAY_BOUNDARY_HOUR": 8,
+        "json": json,
+        "google_sheets_queue": [],
+        "coerce_bool": bool,
+        "calculate_shift_end_datetime": lambda *args: datetime(2026, 10, 6, 16, 15),
+        "checkpoint_and_queue_event": lambda *args, **kwargs: events.append(args),
+    })
+    exec(compile(ast.Module(body=constants + functions, type_ignores=[]),
+                 SCRIPT_PATH, "exec"), namespace)
+    namespace["reset_shift_data"]()
+    namespace["execute_end_shift"] = namespace["reset_shift_data"]
+    return namespace, clock, events
+
+
+def submit_shift_form(namespace):
+    namespace["on_message"](None, None, SimpleNamespace(
+        topic=namespace["MQTT_TOPIC_SHIFT_FORM"],
+        payload=json.dumps({"prodDate": "2026-10-06", "shift": "Day",
+                            "productionLine": "Line 1",
+                            "workingTime": "8:00 AM to 4:15 PM"}).encode(),
+    ))
 
 
 class ABB7ShiftRuntimeTests(unittest.TestCase):
@@ -184,19 +236,19 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
         )
         self.assertIn("STATUS_WAITING_FOR_SHIFT = 7", source)
 
-    def test_shift_entry_window_buffers_for_exactly_45_minutes(self):
+    def test_shift_entry_window_buffers_for_exactly_30_minutes(self):
         _, namespace, calls = load_entry_window_functions()
         boundary = datetime.now()
 
         self.assertTrue(namespace["start_shift_entry_window"](boundary))
         self.assertTrue(
             namespace["shift_entry_window_is_active"](
-                boundary + timedelta(minutes=44, seconds=59)
+                boundary + timedelta(minutes=29, seconds=59)
             )
         )
         self.assertFalse(
             namespace["shift_entry_window_is_active"](
-                boundary + timedelta(minutes=45)
+                boundary + timedelta(minutes=30)
             )
         )
         self.assertEqual(calls["counter_reset"], 0)
@@ -208,12 +260,108 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
 
         self.assertTrue(
             namespace["expire_shift_entry_window"](
-                boundary + timedelta(minutes=45)
+                boundary + timedelta(minutes=30)
             )
         )
         self.assertEqual(calls["counter_reset"], 1)
         self.assertIsNone(namespace["shift_entry_window_started_at"])
         self.assertIsNone(namespace["shift_entry_window_ends_at"])
+
+
+    def test_manual_end_starts_window_at_reset_time(self):
+        namespace, clock, _ = load_shift_form_runtime()
+        namespace["total_machine_time"] = 900
+        namespace["on_message"](None, None, SimpleNamespace(
+            topic=namespace["MQTT_TOPIC_NR_ENDSHIFT"], payload=b'{"value": true}',
+        ))
+        self.assertEqual(namespace["total_machine_time"], 0)
+        self.assertEqual(namespace["shift_entry_window_started_at"], clock["now"].isoformat())
+        self.assertEqual(namespace["shift_entry_window_ends_at"],
+                         (clock["now"] + timedelta(minutes=30)).isoformat())
+
+    def test_late_form_preserves_buffered_timers_and_output(self):
+        for elapsed in (timedelta(minutes=2), timedelta(minutes=29, seconds=59)):
+            with self.subTest(elapsed=elapsed):
+                namespace, clock, events = load_shift_form_runtime()
+                namespace["start_shift_entry_window"](clock["now"])
+                clock["now"] += elapsed
+                # Values recorded by the sensor loop while waiting for the form.
+                recorded = {"total_machine_time": elapsed.total_seconds(),
+                            "run_time": elapsed.total_seconds(),
+                            "base_time_this_hour": elapsed.total_seconds(),
+                            "total_real_operating_time": elapsed.total_seconds(),
+                            "hourly_output": 3, "total_output": 3, "shift_total_output": 3}
+                namespace.update(recorded)
+                submit_shift_form(namespace)
+                self.assertEqual(namespace["current_shift"]["shift_id"], "20261006-Day-Line1")
+                self.assertIsNone(namespace["shift_entry_window_ends_at"])
+                self.assertEqual(events[-1][0], "shift.started")
+                for name, value in recorded.items():
+                    self.assertEqual(namespace[name], value, name)
+                # Re-submitting the same form must not reset adopted production.
+                submit_shift_form(namespace)
+                self.assertEqual(events[-1][0], "shift.updated")
+                for name, value in recorded.items():
+                    self.assertEqual(namespace[name], value, name)
+
+    def test_form_at_or_after_deadline_does_not_adopt_expired_production(self):
+        for minutes in (30, 31):
+            with self.subTest(minutes=minutes):
+                namespace, clock, events = load_shift_form_runtime()
+                namespace["start_shift_entry_window"](clock["now"])
+                namespace["total_machine_time"] = 120
+                namespace["shift_total_output"] = 3
+                clock["now"] += timedelta(minutes=minutes)
+                submit_shift_form(namespace)
+                self.assertEqual(namespace["total_machine_time"], 0)
+                self.assertEqual(namespace["shift_total_output"], 0)
+                self.assertEqual(events[-1][0], "shift.started")
+
+    def test_no_overnight_rows_and_clean_monday_0800_start(self):
+        namespace, clock, _ = load_shift_form_runtime()
+        with open(SCRIPT_PATH, encoding="utf-8") as source_file:
+            source = source_file.read()
+        tree = ast.parse(source, filename=SCRIPT_PATH)
+        loop = next(node for node in ast.walk(tree) if isinstance(node, ast.While))
+        hourly_check = next(node for node in loop.body
+                            if isinstance(node, ast.If)
+                            and "now.minute" in ast.unparse(node.test))
+        timer_start = next(i for i, node in enumerate(loop.body)
+                           if isinstance(node, ast.Assign)
+                           and any(isinstance(t, ast.Name) and t.id == "active_shift"
+                                   for t in node.targets))
+        # Execute the real hourly guard and timer accumulation from the sensor loop.
+        timer_nodes = []
+        for node in loop.body[timer_start:]:
+            if isinstance(node, ast.If):
+                break
+            timer_nodes.append(node)
+        tick = compile(ast.Module(body=[hourly_check] + timer_nodes, type_ignores=[]),
+                       SCRIPT_PATH, "exec")
+        rows = []
+        namespace["push_hourly_to_sheets"] = lambda **kw: rows.append(kw)
+        # Sunday's night shift has finalized at Monday 00:30 and cleared its context.
+        clock["now"] = datetime(2026, 10, 5, 0, 30)
+        namespace["reset_shift_data"]()
+        namespace["start_shift_entry_window"](clock["now"])
+        namespace["total_machine_time"] = 1800  # Temporary, unassigned buffer.
+        for hour in range(1, 8):
+            clock["now"] = datetime(2026, 10, 5, hour)
+            namespace["expire_shift_entry_window"](clock["now"])
+            namespace.update(now=clock["now"], loop_delta=60)
+            exec(tick, namespace)
+            self.assertEqual(namespace["total_machine_time"], 0)
+            self.assertEqual(namespace["base_time_this_hour"], 0)
+        self.assertEqual(rows, [])
+        clock["now"] = datetime(2026, 10, 5, 8)
+        namespace["force_production_day_reset"](clock["now"])
+        for name in RESET_COUNTERS:
+            self.assertEqual(namespace[name], 0, name)
+        self.assertEqual(namespace["shift_entry_window_started_at"], "2026-10-05T08:00:00")
+        namespace.update(now=clock["now"] + timedelta(minutes=2), loop_delta=120)
+        exec(tick, namespace)
+        self.assertEqual(namespace["total_machine_time"], 120)
+        self.assertEqual(rows, [])
 
     def test_production_day_changes_at_0800(self):
         _, namespace, _ = load_boundary_functions({"shift_id": "NO PROD"})

@@ -39,6 +39,20 @@ The local Excel workbook and Node-RED export are intentionally excluded from
 Git. The Node-RED export currently contains populated secret fields. Do not use
 `git add -f` on it. Transfer it privately or export a sanitized version first.
 
+## Late shift entry (30-minute window)
+
+After an automatic shift end, the 08:00 production-day reset, or a manual
+Node-RED End Shift command, the service buffers machine timers and sensor counts
+for 30 minutes while waiting for the next shift form. Submitting the form during
+that window assigns the buffered production to the new shift without resetting
+its counters. For example, a reset at 08:00 followed by entry at 08:02 keeps the
+two minutes already recorded, together with any detected products.
+
+The window ends exactly 30 minutes after the reset (08:30 in this example).
+If no form arrives before then, unassigned timers and counts are discarded and
+tracking waits for a new form. The service must be running to record machine
+activity; this does not reconstruct sensor activity during a power outage.
+
 ## Runtime assumptions
 
 - Raspberry Pi OS with Python 3.
@@ -213,3 +227,26 @@ pull procedure above.
 - No Node-RED activity: check Mosquitto and confirm Node-RED uses `localhost:1883`.
 - Service restart loop: inspect `journalctl`, `.env` permissions, GPIO access, and Python dependencies.
 - Google data missing: verify `WEB_APP_URL`, Apps Script deployment access, and Apps Script logs.
+
+## Update Node-RED for automatic shift endings
+
+The Python service ends shifts from the submitted working hours: Day without OT
+at 16:15, Day with OT at 20:00, Night without OT at 00:30 the following day, and
+Night with OT at 08:00 the following day. Overnight idle hours do not generate
+production rows; the 08:00 boundary starts the new day's counters from zero.
+
+Update your private Node-RED export locally:
+
+```bash
+python3 deploy/update_nodered_shift_end.py original-flow.json updated-flow.json
+```
+
+This removes the End Shift button and duplicate MQTT reset signals, while keeping
+automatic dashboard cleanup and session-end notification. The dashboard clock
+uses a dated deadline and fires once, even if its clock tick is late. Machine
+counter finalization and the 30-minute entry window are owned by Python.
+
+Back up your deployed flow, then replace the existing flow with the generated
+export in Node-RED and deploy it; do not add a second copy alongside the old flow.
+Deploy the updated Python service as well. Keep exports containing credentials
+out of Git. Run the Pi and Node-RED in the local Malaysia timezone.

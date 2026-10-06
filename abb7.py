@@ -66,7 +66,7 @@ force_delay = False
 # ==========================================
 LINE_CODE = "ABB7"
 PRODUCTION_DAY_BOUNDARY_HOUR = 8
-SHIFT_ENTRY_GRACE_MINUTES = 45
+SHIFT_ENTRY_GRACE_MINUTES = 30
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
 MQTT_TOPIC_DATA = "sensor2/data"
@@ -445,7 +445,7 @@ def start_shift_entry_window(boundary_time):
 
 
 def expire_shift_entry_window(moment=None):
-    """Discard unassigned production when the 45-minute entry window expires."""
+    """Discard unassigned production when the 30-minute entry window expires."""
 
     moment = moment or datetime.now()
     window_end = parse_shift_entry_datetime(shift_entry_window_ends_at)
@@ -959,7 +959,9 @@ def on_message(client, userdata, msg):
                 
             if is_end == True or str(is_end).lower() == "true":
                 print(f"\n[MQTT EVENT] End Shift Requested from Node-RED!")
+                reset_time = datetime.now()
                 execute_end_shift()
+                start_shift_entry_window(reset_time)
 
         elif topic == MQTT_TOPIC_PARAM_CONDITION and is_json:
             print(f"\n[MQTT EVENT] Parameter Condition Data Received")
