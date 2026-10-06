@@ -77,6 +77,8 @@ class ABB7StartupSmokeTest(unittest.TestCase):
                         "shift_total_output": 428,
                         "total_rejects": 2,
                     },
+                    "pending_shift_form": {"prodDate": "2099-07-22", "shift": "Night",
+                                           "workingTime": "8:00 PM to 8:00 AM", "overtime": True},
                     "timers": {},
                     "cycle": {},
                     "current_mode": "NORMAL",
@@ -164,6 +166,7 @@ class ABB7StartupSmokeTest(unittest.TestCase):
             self.assertEqual(namespace["total_output"], 191)
             self.assertEqual(namespace["shift_total_output"], 428)
             self.assertTrue(namespace["recovered_from_sqlite"])
+            self.assertEqual(namespace["pending_shift_form"]["prodDate"], "2099-07-22")
 
     def test_shift_end_queues_partial_hour_before_pdf(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

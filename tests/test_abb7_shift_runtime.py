@@ -1,5 +1,6 @@
 import ast
 import json
+import threading
 from types import SimpleNamespace
 from datetime import datetime, timedelta
 import os
@@ -179,7 +180,8 @@ def load_shift_form_runtime():
                  and node.name in {"on_message", "reset_shift_data",
                                    "reset_production_runtime_counters", "production_day_key",
                                    "current_shift_matches_production_day",
-                                   "force_production_day_reset"}]
+                                   "force_production_day_reset", "apply_shift_form", "receive_shift_form",
+                                   "advance_shift_schedule", "get_current_shift_end_datetime"}]
     constants = [node for node in tree.body if isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name)
                          and (target.id.startswith("MQTT_TOPIC_") or target.id == "LINE_CODE")
@@ -190,14 +192,20 @@ def load_shift_form_runtime():
         "PRODUCTION_DAY_BOUNDARY_HOUR": 8,
         "json": json,
         "google_sheets_queue": [],
-        "coerce_bool": bool,
-        "calculate_shift_end_datetime": lambda *args: datetime(2026, 10, 6, 16, 15),
+        "coerce_bool": __import__("abb7_shift_schedule").coerce_bool,
+        "calculate_shift_start_datetime": __import__("abb7_shift_schedule").calculate_shift_start_datetime,
+        "pending_shift_form": None,
+        "shift_state_lock": threading.RLock(),
+        "publish_shift_form_result": lambda *args: None,
+        "hour_slot_for_shift_end": __import__("abb7_shift_schedule").hour_slot_for_shift_end,
+        "last_production_day": datetime(2026, 10, 6, 8).date(),
+        "calculate_shift_end_datetime": __import__("abb7_shift_schedule").calculate_shift_end_datetime,
         "checkpoint_and_queue_event": lambda *args, **kwargs: events.append(args),
     })
     exec(compile(ast.Module(body=constants + functions, type_ignores=[]),
                  SCRIPT_PATH, "exec"), namespace)
     namespace["reset_shift_data"]()
-    namespace["execute_end_shift"] = namespace["reset_shift_data"]
+    namespace["execute_end_shift"] = lambda **kwargs: namespace["reset_shift_data"]()
     return namespace, clock, events
 
 
@@ -363,6 +371,119 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
         self.assertEqual(namespace["total_machine_time"], 120)
         self.assertEqual(rows, [])
 
+    def test_early_night_form_waits_for_day_handover(self):
+        ns, clock, events = load_shift_form_runtime()
+        submit_shift_form(ns)
+        clock["now"] = datetime(2026, 10, 6, 15, 32)
+        ns.update(total_machine_time=500, shift_total_output=8)
+        night = {"prodDate": "2026-10-06", "shift": "Night", "productionLine": "Line 1",
+                 "overtime": False, "workingTime": "4:15 PM to 12:30 AM"}
+        ns["receive_shift_form"](night)
+        self.assertEqual(ns["current_shift"]["shift"], "Day")
+        self.assertEqual(ns["shift_total_output"], 8)
+        self.assertEqual(ns["pending_shift_form"], night)
+        self.assertEqual(len(events), 1)
+        clock["now"] = datetime(2026, 10, 6, 16, 15)
+        ns["advance_shift_schedule"](clock["now"])
+        self.assertEqual(ns["current_shift"]["shift"], "Night")
+        self.assertEqual(ns["current_shift"]["scheduled_end_at"], "2026-10-07T00:30:00")
+        self.assertEqual(ns["shift_total_output"], 0)
+        self.assertIsNone(ns["pending_shift_form"])
+        self.assertEqual(len(events), 2)
+        ns["advance_shift_schedule"](clock["now"])
+        self.assertEqual(len(events), 2)
+
+    def test_early_form_with_no_active_shift_does_not_activate(self):
+        ns, clock, events = load_shift_form_runtime()
+        clock["now"] = datetime(2026, 10, 6, 15, 32)
+        ns["receive_shift_form"]({"prodDate": "2026-10-06", "shift": "Night",
+                                  "productionLine": "Line 1", "workingTime": "4:15 PM to 12:30 AM"})
+        self.assertEqual(ns["current_shift"]["shift_id"], "NO PROD")
+        self.assertEqual(events, [])
+        self.assertEqual(ns["google_sheets_queue"], [])
+
+    def test_test_commands_do_not_change_live_or_pending_state(self):
+        ns, clock, events = load_shift_form_runtime()
+        submit_shift_form(ns)
+        ns["shift_total_output"] = 8
+        shift_before = dict(ns["current_shift"])
+        for topic in (ns["MQTT_TOPIC_SHIFT_FORM"], ns["MQTT_TOPIC_SETUP"], ns["MQTT_TOPIC_NR_ENDSHIFT"]):
+            ns["on_message"](None, None, SimpleNamespace(topic=topic, payload=json.dumps(
+                {"testMode": "true", "value": True, "model": "TEST", "prodDate": "2026-10-06",
+                 "shift": "Night", "workingTime": "4:15 PM to 12:30 AM"}).encode()))
+        self.assertEqual(ns["current_shift"], shift_before)
+        self.assertEqual(ns["shift_total_output"], 8)
+        self.assertIsNone(ns["pending_shift_form"])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(len(ns["google_sheets_queue"]), 1)
+
+    def test_resend_preserves_counts_and_active_schedule(self):
+        ns, clock, events = load_shift_form_runtime()
+        submit_shift_form(ns)
+        ns.update(shift_total_output=8, total_machine_time=120)
+        ns["receive_shift_form"]({"action": "resend_active"})
+        self.assertEqual(ns["shift_total_output"], 8)
+        self.assertEqual(ns["total_machine_time"], 120)
+        self.assertEqual(events[-1][0], "shift.updated")
+        self.assertEqual(ns["current_shift"]["scheduled_end_at"], "2026-10-06T16:15:00")
+
+    def test_expired_and_overlapping_forms_are_rejected(self):
+        ns, clock, events = load_shift_form_runtime()
+        submit_shift_form(ns)
+        ns["shift_total_output"] = 8
+        self.assertFalse(ns["receive_shift_form"]({"prodDate": "2026-10-05", "shift": "Day",
+                                                  "workingTime": "8:00 AM to 4:15 PM"}))
+        self.assertFalse(ns["receive_shift_form"]({"prodDate": "2026-10-06", "shift": "Day",
+                                                  "workingTime": "4:15 PM to 12:30 AM"}))
+        ns["current_shift"]["scheduled_end_at"] = "2026-10-06T20:00:00"
+        clock["now"] = datetime(2026, 10, 6, 15, 32)
+        self.assertFalse(ns["receive_shift_form"]({"prodDate": "2026-10-06", "shift": "Night",
+                                                  "workingTime": "4:15 PM to 12:30 AM"}))
+        self.assertEqual(ns["shift_total_output"], 8)
+        self.assertIsNone(ns["pending_shift_form"])
+        self.assertEqual(len(events), 1)
+
+    def test_pending_day_activates_after_0800_reset(self):
+        ns, clock, events = load_shift_form_runtime()
+        clock["now"] = datetime(2026, 10, 6, 7, 50)
+        ns["last_production_day"] = datetime(2026, 10, 5).date()
+        form = {"prodDate": "2026-10-06", "shift": "Day", "productionLine": "Line 1",
+                "workingTime": "8:00 AM to 4:15 PM"}
+        ns["receive_shift_form"](form)
+        clock["now"] = datetime(2026, 10, 6, 8, 0)
+        ns["advance_shift_schedule"](clock["now"])
+        ns["shift_total_output"] = 2
+        ns["advance_shift_schedule"](clock["now"] + timedelta(minutes=2))
+        self.assertEqual(ns["shift_total_output"], 2)
+        self.assertIsNone(ns["pending_shift_form"])
+        self.assertEqual(len(events), 1)
+
+    def test_later_ot_change_does_not_stall_loop_on_pending_conflict(self):
+        ns, clock, events = load_shift_form_runtime()
+        submit_shift_form(ns)
+        clock["now"] = datetime(2026, 10, 6, 15, 32)
+        ns["receive_shift_form"]({"prodDate": "2026-10-06", "shift": "Night",
+                                  "productionLine": "Line 1", "workingTime": "4:15 PM to 12:30 AM"})
+        ns["receive_shift_form"]({"prodDate": "2026-10-06", "shift": "Day", "overtime": True,
+                                  "productionLine": "Line 1", "workingTime": "8:00 AM to 8:00 PM"})
+        clock["now"] = datetime(2026, 10, 6, 16, 15)
+        ns["shift_total_output"] = 8
+        ns["advance_shift_schedule"](clock["now"])
+        self.assertIsNone(ns["pending_shift_form"])
+        self.assertEqual(ns["current_shift"]["shift"], "Day")
+        self.assertEqual(ns["shift_total_output"], 8)
+        self.assertFalse(ns["advance_shift_schedule"](clock["now"]))
+
+    def test_form_received_before_loop_handles_0800_is_not_reset_twice(self):
+        ns, clock, events = load_shift_form_runtime()
+        ns["last_production_day"] = datetime(2026, 10, 5).date()
+        clock["now"] = datetime(2026, 10, 6, 8, 2)
+        submit_shift_form(ns)
+        ns.update(total_machine_time=120, shift_total_output=2)
+        ns["advance_shift_schedule"](clock["now"])
+        self.assertEqual(ns["total_machine_time"], 120)
+        self.assertEqual(ns["shift_total_output"], 2)
+
     def test_production_day_changes_at_0800(self):
         _, namespace, _ = load_boundary_functions({"shift_id": "NO PROD"})
 
@@ -402,7 +523,7 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
         self.assertEqual(calls["counter_reset"], 0)
         self.assertEqual(calls["shift_reset"], 1)
         self.assertEqual(calls["window_start"], 1)
-        self.assertIn("current_production_day != last_production_day", source)
+        self.assertIn("production_day != last_production_day", source)
         self.assertIn("reset_stale_shift_after_startup()", source)
 
 

@@ -4,12 +4,14 @@ import time
 from datetime import datetime, timedelta
 import json
 import os
+import threading
 import paho.mqtt.client as mqtt
 import requests
 
 from abb7_persistence import ABB7OutboxSender, ABB7SQLiteStore
 from abb7_shift_schedule import (
     calculate_shift_end_datetime,
+    calculate_shift_start_datetime,
     coerce_bool,
     hour_slot_for_shift_end,
 )
@@ -132,6 +134,9 @@ last_runtime_checkpoint = 0.0
 recovered_from_sqlite = False
 shift_entry_window_started_at = None
 shift_entry_window_ends_at = None
+pending_shift_form = None
+shift_state_lock = threading.RLock()
+last_production_day = (datetime.now() - timedelta(hours=PRODUCTION_DAY_BOUNDARY_HOUR)).date()
 
 # Initialized with "NO PROD" so it displays correctly on startup
 current_shift = {
@@ -206,6 +211,7 @@ def build_runtime_snapshot():
     return {
         "schema_version": 1,
         "current_shift": dict(current_shift),
+        "pending_shift_form": pending_shift_form,
         "current_mode": current_mode,
         "current_status": current_status,
         "last_sent_hour": last_sent_hour,
@@ -313,7 +319,7 @@ def restore_runtime_state():
     global total_output, shift_total_output, hourly_output, total_rejects
     global hourly_rest_time, lost_time_this_hour, base_time_this_hour
     global current_cycle_time, current_mode, current_status
-    global last_sent_hour, current_shift
+    global last_sent_hour, current_shift, pending_shift_form
     global sensor_blocked, force_delay, recovered_from_sqlite
     global shift_entry_window_started_at, shift_entry_window_ends_at
 
@@ -331,6 +337,9 @@ def restore_runtime_state():
         checkpoint_runtime_state(force=True, reason="first startup")
         return False
 
+    pending_shift_form = snapshot.get("pending_shift_form")
+    if not isinstance(pending_shift_form, dict):
+        pending_shift_form = None
     restored_shift = snapshot.get("current_shift", {})
     if isinstance(restored_shift, dict):
         current_shift.update(restored_shift)
@@ -588,6 +597,7 @@ def reset_stale_shift_after_startup(moment=None):
 
 def execute_end_shift(hour_slot_override=None, end_reason="MANUAL SHIFT END"):
     ending_shift_id = current_shift["shift_id"]
+    ending_form = dict(current_shift)
 
     # If there is no active shift, skip the PDF but STILL reset the timers
     if ending_shift_id == "NO PROD":
@@ -642,6 +652,7 @@ def execute_end_shift(hour_slot_override=None, end_reason="MANUAL SHIFT END"):
             "shift_id": ending_shift_id,
         })
         print(f"[GOOGLE QUEUE] PDF generation queued for Shift: {ending_shift_id}.")
+        publish_shift_form_result("ended", ending_form)
 
 def push_hourly_to_sheets(
     is_model_change=False,
@@ -760,6 +771,210 @@ def on_connect(client, userdata, flags, rc):
     )
     print(f"\n[SYSTEM] Connected to MQTT Broker. Ready to receive commands.")
 
+
+def apply_shift_form(data):
+    """Activate a validated form, preserving a matching late-entry buffer."""
+    global current_shift
+    expire_shift_entry_window()
+    previous_shift_id = current_shift.get("shift_id", "NO PROD")
+    date_clean = data.get("prodDate", "").replace("-", "")
+    new_shift_id = f"{date_clean}-{data.get('shift', '')}-{data.get('productionLine', '').replace(' ', '')}"
+    if previous_shift_id != "NO PROD" and previous_shift_id != new_shift_id:
+        print(
+            "[SHIFT WARNING] A different shift is already active. "
+            "The new form was rejected so active production counters are preserved."
+        )
+        return
+    adopting_shift_buffer = (
+        previous_shift_id == "NO PROD" and shift_entry_window_is_active()
+    )
+    current_shift["shift_id"] = new_shift_id
+    current_shift["source_form"] = dict(data)
+    current_shift["scheduled_start_at"] = calculate_shift_start_datetime(
+        data.get("prodDate"), data.get("shift"), data.get("overtime", False), data.get("workingTime")
+    ).isoformat()
+
+    def parse_ops(op_data):
+        if isinstance(op_data, list): return ", ".join(op_data)
+        return str(op_data) if op_data else "-"
+
+    current_shift.update({
+        "date": data.get("prodDate", "-"),
+        "line": data.get("productionLine", "-"),
+        "shift": data.get("shift", "-"),
+        "group": data.get("group", "-"),
+        "workingTime": data.get("workingTime", "-"),
+        "overtime": coerce_bool(data.get("overtime", False)),
+        "supervisor": data.get("supervisor", "-"),
+        "leader": data.get("lineLeader", "-"),
+        "forming": parse_ops(data.get("formingOperator")),
+        "waterjet": parse_ops(data.get("waterjetOperator")),
+        "assembly": parse_ops(data.get("assemblyOperator")),
+        "quality": data.get("qualityOperator", "-")
+    })
+    try:
+        scheduled_end = calculate_shift_end_datetime(
+            current_shift["date"],
+            current_shift["shift"],
+            current_shift["overtime"],
+            current_shift["workingTime"],
+        )
+        current_shift["scheduled_end_at"] = scheduled_end.isoformat()
+        print(
+            "[SCHEDULE] Shift will automatically end at "
+            f"{scheduled_end.strftime('%Y-%m-%d %I:%M %p')}."
+        )
+    except ValueError as exc:
+        current_shift["scheduled_end_at"] = None
+        print(f"[SCHEDULE ERROR] Automatic shift end disabled: {exc}")
+
+    if adopting_shift_buffer:
+        clear_shift_entry_window()
+        print(
+            "[SHIFT BUFFER] Shift form accepted. Buffered production "
+            f"was assigned to {current_shift['shift_id']} without resetting counters."
+        )
+
+    print(f"\n[MQTT EVENT] New Shift Started: {current_shift['shift_id']}")
+    row_data = [
+        current_shift["shift_id"], current_shift["date"], current_shift["line"],
+        current_shift["shift"], current_shift["group"], current_shift["workingTime"],
+        current_shift["supervisor"], current_shift["leader"],
+        current_shift["forming"], current_shift["waterjet"],
+        current_shift["assembly"], current_shift["quality"]
+    ]
+    print(f" +--> QUEUING SHIFT DATA: {row_data}")
+    google_sheets_queue.append({"tab": "Shift_Data", "row": row_data})
+    shift_event_type = (
+        "shift.updated"
+        if previous_shift_id == current_shift["shift_id"]
+        else "shift.started"
+    )
+    checkpoint_and_queue_event(
+        shift_event_type,
+        {
+            "line_code": LINE_CODE,
+            "source_shift_id": current_shift["shift_id"],
+            "shift": dict(current_shift),
+            "source_payload": data,
+        },
+        event_id=data.get("event_id"),
+    )
+    publish_shift_form_result("active", data)
+    return True
+
+
+def publish_shift_form_result(status, data, message=""):
+    """Acknowledge forms so Node-RED only writes accepted production forms."""
+    result = {"status": status, "source_payload": data, "message": message,
+              "active_shift": dict(current_shift), "pending_shift": pending_shift_form}
+    try:
+        mqtt_client.publish(f"{LINE_CODE.lower()}/shift_form_result", json.dumps(result), qos=1)
+    except Exception as exc:
+        print(f"[SHIFT ACK ERROR] {exc}")
+
+
+def receive_shift_form(data, moment=None):
+    global pending_shift_form, last_production_day
+    moment = moment or datetime.now()
+    with shift_state_lock:
+        if coerce_bool(data.get("testMode", False)):
+            print("[TEST] Preview ignored; production state is unchanged.")
+            return False
+        if data.get("action") == "resend_active":
+            if current_shift.get("shift_id") == "NO PROD":
+                publish_shift_form_result("rejected", data, "There is no active shift to resend.")
+                return False
+            source = current_shift.get("source_form")
+            if not isinstance(source, dict):
+                publish_shift_form_result("rejected", data, "Re-enter the active shift details once before using resend.")
+                return False
+            data = dict(source)
+        try:
+            start = calculate_shift_start_datetime(data.get("prodDate"), data.get("shift"),
+                                                   data.get("overtime", False), data.get("workingTime"))
+            end = calculate_shift_end_datetime(data.get("prodDate"), data.get("shift"),
+                                               data.get("overtime", False), data.get("workingTime"))
+        except (ValueError, TypeError) as exc:
+            publish_shift_form_result("rejected", data, str(exc))
+            return False
+        if moment >= end:
+            publish_shift_form_result("rejected", data, "This shift has already ended. Check the production date.")
+            return False
+        active_end = get_current_shift_end_datetime()
+        new_id = f"{data.get('prodDate', '').replace('-', '')}-{data.get('shift', '')}-{data.get('productionLine', '').replace(' ', '')}"
+        if moment < start:
+            if active_end is not None and start < active_end:
+                publish_shift_form_result("rejected", data, "Next shift overlaps the active shift. Check OT and working hours.")
+                return False
+            pending_shift_form = dict(data)
+            checkpoint_runtime_state(force=True, reason="pending shift saved")
+            publish_shift_form_result("pending", data, f"Waiting until {start.isoformat()}")
+            return True
+        if active_end is not None and moment >= active_end:
+            execute_end_shift(hour_slot_override=hour_slot_for_shift_end(active_end),
+                              end_reason="SCHEDULED SHIFT END")
+            start_shift_entry_window(active_end)
+        elif current_shift.get("shift_id") != "NO PROD" and current_shift.get("shift_id") != new_id:
+            publish_shift_form_result("rejected", data, "Another shift is still active.")
+            return False
+        if production_day_key(moment) != last_production_day:
+            force_production_day_reset(moment)
+            last_production_day = production_day_key(moment)
+        if current_shift.get("shift_id") == "NO PROD":
+            buffered_start = parse_shift_entry_datetime(shift_entry_window_started_at)
+            if buffered_start != start:
+                reset_production_runtime_counters()
+                clear_shift_entry_window()
+                start_shift_entry_window(start)
+        # Clear the pending copy before the activation checkpoint, for restart safety.
+        if pending_shift_form is not None:
+            pending_id = f"{pending_shift_form.get('prodDate', '').replace('-', '')}-{pending_shift_form.get('shift', '')}-{pending_shift_form.get('productionLine', '').replace(' ', '')}"
+            if pending_id == new_id:
+                pending_shift_form = None
+        return apply_shift_form(data)
+
+
+def advance_shift_schedule(moment=None):
+    """Finalize outgoing shifts, enforce 08:00, then activate due pending forms."""
+    global last_production_day, pending_shift_form
+    moment = moment or datetime.now()
+    changed = False
+    with shift_state_lock:
+        scheduled_end = get_current_shift_end_datetime()
+        if scheduled_end is not None and moment >= scheduled_end:
+            print(f"[SYSTEM] Scheduled shift end reached: {scheduled_end.isoformat()}")
+            execute_end_shift(hour_slot_override=hour_slot_for_shift_end(scheduled_end),
+                              end_reason="SCHEDULED SHIFT END")
+            start_shift_entry_window(scheduled_end)
+            changed = True
+        production_day = production_day_key(moment)
+        if production_day != last_production_day:
+            force_production_day_reset(moment)
+            last_production_day = production_day
+            changed = True
+        if pending_shift_form is not None:
+            form = dict(pending_shift_form)
+            try:
+                start = calculate_shift_start_datetime(form.get("prodDate"), form.get("shift"),
+                                                       form.get("overtime", False), form.get("workingTime"))
+                end = calculate_shift_end_datetime(form.get("prodDate"), form.get("shift"),
+                                                   form.get("overtime", False), form.get("workingTime"))
+                if moment >= end:
+                    pending_shift_form = None
+                    checkpoint_runtime_state(force=True, reason="expired pending shift discarded")
+                    publish_shift_form_result("rejected", form, "Pending shift expired while offline.")
+                elif moment >= start:
+                    if not receive_shift_form(form, moment):
+                        pending_shift_form = None
+                        checkpoint_runtime_state(force=True, reason="conflicting pending shift discarded")
+                    changed = True
+            except (ValueError, TypeError) as exc:
+                pending_shift_form = None
+                checkpoint_runtime_state(force=True, reason="invalid pending shift discarded")
+                publish_shift_form_result("rejected", form, str(exc))
+    return changed
+
 def on_message(client, userdata, msg):
     global current_mode, current_shift, total_rejects, force_delay
     global hourly_output, total_output, shift_total_output, current_cycle_time
@@ -771,88 +986,12 @@ def on_message(client, userdata, msg):
         try: data = json.loads(payload_str); is_json = True
         except ValueError: data = payload_str; is_json = False
 
+        if is_json and isinstance(data, dict) and coerce_bool(data.get("testMode", False)):
+            print("[TEST] Command ignored; production state is unchanged.")
+            return
+
         if topic == MQTT_TOPIC_SHIFT_FORM and is_json:
-            expire_shift_entry_window()
-            previous_shift_id = current_shift.get("shift_id", "NO PROD")
-            date_clean = data.get("prodDate", "").replace("-", "")
-            new_shift_id = f"{date_clean}-{data.get('shift', '')}-{data.get('productionLine', '').replace(' ', '')}"
-            if previous_shift_id != "NO PROD" and previous_shift_id != new_shift_id:
-                print(
-                    "[SHIFT WARNING] A different shift is already active. "
-                    "The new form was rejected so active production counters are preserved."
-                )
-                return
-            adopting_shift_buffer = (
-                previous_shift_id == "NO PROD" and shift_entry_window_is_active()
-            )
-            current_shift["shift_id"] = new_shift_id
-            
-            def parse_ops(op_data):
-                if isinstance(op_data, list): return ", ".join(op_data)
-                return str(op_data) if op_data else "-"
-
-            current_shift.update({
-                "date": data.get("prodDate", "-"),
-                "line": data.get("productionLine", "-"),
-                "shift": data.get("shift", "-"),
-                "group": data.get("group", "-"),
-                "workingTime": data.get("workingTime", "-"),
-                "overtime": coerce_bool(data.get("overtime", False)),
-                "supervisor": data.get("supervisor", "-"),
-                "leader": data.get("lineLeader", "-"),
-                "forming": parse_ops(data.get("formingOperator")),
-                "waterjet": parse_ops(data.get("waterjetOperator")),
-                "assembly": parse_ops(data.get("assemblyOperator")),
-                "quality": data.get("qualityOperator", "-")
-            })
-            try:
-                scheduled_end = calculate_shift_end_datetime(
-                    current_shift["date"],
-                    current_shift["shift"],
-                    current_shift["overtime"],
-                    current_shift["workingTime"],
-                )
-                current_shift["scheduled_end_at"] = scheduled_end.isoformat()
-                print(
-                    "[SCHEDULE] Shift will automatically end at "
-                    f"{scheduled_end.strftime('%Y-%m-%d %I:%M %p')}."
-                )
-            except ValueError as exc:
-                current_shift["scheduled_end_at"] = None
-                print(f"[SCHEDULE ERROR] Automatic shift end disabled: {exc}")
-
-            if adopting_shift_buffer:
-                clear_shift_entry_window()
-                print(
-                    "[SHIFT BUFFER] Shift form accepted. Buffered production "
-                    f"was assigned to {current_shift['shift_id']} without resetting counters."
-                )
-
-            print(f"\n[MQTT EVENT] New Shift Started: {current_shift['shift_id']}")
-            row_data = [
-                current_shift["shift_id"], current_shift["date"], current_shift["line"], 
-                current_shift["shift"], current_shift["group"], current_shift["workingTime"],
-                current_shift["supervisor"], current_shift["leader"],
-                current_shift["forming"], current_shift["waterjet"],
-                current_shift["assembly"], current_shift["quality"]
-            ]
-            print(f" +--> QUEUING SHIFT DATA: {row_data}")
-            google_sheets_queue.append({"tab": "Shift_Data", "row": row_data})
-            shift_event_type = (
-                "shift.updated"
-                if previous_shift_id == current_shift["shift_id"]
-                else "shift.started"
-            )
-            checkpoint_and_queue_event(
-                shift_event_type,
-                {
-                    "line_code": LINE_CODE,
-                    "source_shift_id": current_shift["shift_id"],
-                    "shift": dict(current_shift),
-                    "source_payload": data,
-                },
-                event_id=data.get("event_id"),
-            )
+            receive_shift_form(data)
 
         elif topic == MQTT_TOPIC_SETUP and is_json:
             print(f"\n[MQTT EVENT] Setup / Model Target Updated")
@@ -1157,6 +1296,9 @@ def publish_live_data():
         "working_time": current_shift["workingTime"],
         "overtime": current_shift.get("overtime", False),
         "scheduled_end_at": current_shift.get("scheduled_end_at"),
+        "scheduled_start_at": current_shift.get("scheduled_start_at"),
+        "pending_shift": pending_shift_form,
+        "persistence_enabled": persistence_store is not None,
         "supervisor": current_shift["supervisor"],
         "leader": current_shift["leader"],
         "forming_operator": current_shift["forming"],
@@ -1225,7 +1367,6 @@ print("=====================================================")
 
 last_loop_time = time.time()
 last_debug_print_time = time.time()
-last_production_day = production_day_key(datetime.now())
 
 try:
     while True:
@@ -1239,30 +1380,8 @@ try:
         # official counters after the grace window.
         expire_shift_entry_window(now)
 
-        # 1. End the active shift using its Node-RED working time. This check
-        # comes before the ordinary hourly push so an exact 08:00/20:00 end
-        # creates one final 07:00-08:00/19:00-20:00 row, not a duplicate.
-        scheduled_shift_end = get_current_shift_end_datetime()
-        if scheduled_shift_end is not None and now >= scheduled_shift_end:
-            final_slot = hour_slot_for_shift_end(scheduled_shift_end)
-            print(
-                "\n[SYSTEM] Scheduled shift end reached: "
-                f"{scheduled_shift_end.strftime('%Y-%m-%d %I:%M %p')} | "
-                f"Final slot: {final_slot}"
-            )
-            execute_end_shift(
-                hour_slot_override=final_slot,
-                end_reason="SCHEDULED SHIFT END",
-            )
-            start_shift_entry_window(scheduled_shift_end)
-            continue
-
-        # 1.5 Hard safety boundary. A missed/invalid night end can never leak
-        # counters or elapsed time into the production day beginning at 08:00.
-        current_production_day = production_day_key(now)
-        if current_production_day != last_production_day:
-            force_production_day_reset(now)
-            last_production_day = current_production_day
+        # Python owns both end and start boundaries, including pending forms.
+        if advance_shift_schedule(now):
             continue
 
         # 1.6 Check for Standard Hourly Push (at minute 00)

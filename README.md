@@ -242,11 +242,43 @@ python3 deploy/update_nodered_shift_end.py original-flow.json updated-flow.json
 ```
 
 This removes the End Shift button and duplicate MQTT reset signals, while keeping
-automatic dashboard cleanup and session-end notification. The dashboard clock
-uses a dated deadline and fires once, even if its clock tick is late. Machine
+automatic dashboard cleanup and session-end notification. Python broadcasts shift-end decisions to Node-RED; the dashboard does not run
+a separate reset clock. Machine
 counter finalization and the 30-minute entry window are owned by Python.
 
 Back up your deployed flow, then replace the existing flow with the generated
 export in Node-RED and deploy it; do not add a second copy alongside the old flow.
 Deploy the updated Python service as well. Keep exports containing credentials
 out of Git. Run the Pi and Node-RED in the local Malaysia timezone.
+
+## Test forms, early shifts, and resend
+
+Use **Test mode** on the shift form for previews. Preview does not send MQTT,
+change the live shift or its counters, write shift records, or overwrite the
+browser's saved production form. Switch Test mode off to confirm a live shift.
+Test-marked commands are also ignored by Python.
+
+Forms entered before their scheduled start are saved as pending in SQLite when
+persistence is available. Python finalizes the outgoing shift first, enforces the
+08:00 production-day reset, then activates the pending shift at its scheduled
+start. Overlapping schedules, expired forms, and working hours inconsistent with
+the Day/Night and OT selections are rejected. Pending forms do not update active
+Node-RED shift memory or production services before Python accepts activation.
+
+**Resend active shift details** resubmits the current accepted form and preserves
+timers and counts. It sends shift metadata; it does not reconstruct lost sensor
+counts or replay all historical data. The dashboard shows the active shift,
+scheduled reset time, next pending shift, and whether SQLite saving is disabled.
+
+Deploy the Python update and regenerate/import the Node-RED flow together:
+
+```bash
+python3 deploy/update_nodered_shift_end.py original-flow.json updated-flow.json
+node tests/test_nodered_shift_ui.cjs updated-flow.json
+```
+
+The Node-RED check is optional during installation and validates the generated
+flow's routing and preview behavior without contacting production services.
+Keep the original export as a backup. Updating only Python does not add the new
+Test mode or routing to the dashboard. Pending-state recovery requires a working,
+writable SQLite database.

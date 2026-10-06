@@ -86,6 +86,22 @@ def calculate_shift_end_datetime(
     return end_datetime
 
 
+def calculate_shift_start_datetime(production_date, shift, overtime, working_time):
+    """Return the dated local start, using the same schedule as shift end."""
+    production_day = _parse_production_date(production_date)
+    key = (str(shift or "").strip().upper(), coerce_bool(overtime))
+    if key not in DEFAULT_WORKING_TIMES:
+        raise ValueError("Shift must be Day or Night")
+    expected = _parse_working_time(DEFAULT_WORKING_TIMES[key])
+    try:
+        supplied = _parse_working_time(working_time)
+    except ValueError:
+        supplied = expected
+    if supplied != expected:
+        raise ValueError("Working hours do not match the selected shift and overtime")
+    return datetime.combine(production_day, supplied[0])
+
+
 def hour_slot_for_shift_end(shift_end: datetime) -> str:
     """Map a shift end to the hourly PRS slot containing the remainder.
 

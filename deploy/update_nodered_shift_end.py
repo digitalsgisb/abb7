@@ -7,6 +7,11 @@ import json
 from pathlib import Path
 import re
 import sys
+import importlib.util
+
+_ui_spec = importlib.util.spec_from_file_location("shift_ui", Path(__file__).with_name("nodered_shift_ui.py"))
+_ui_module = importlib.util.module_from_spec(_ui_spec)
+_ui_spec.loader.exec_module(_ui_module)
 
 FUNCTIONS = {'Set Shift End Time': "// Night shifts finish on the day after the selected production date.\nconst data = msg.payload || {};\nconst shift = String(data.shift || '').trim().toUpperCase();\nconst ot = data.overtime === true || data.overtime === 1 ||\n    ['1', 'true', 'yes', 'on', 'ot'].includes(String(data.overtime).trim().toLowerCase());\nconst match = /^(\\d{4})-?(\\d{2})-?(\\d{2})$/.exec(String(data.prodDate || ''));\nif (!match || !['DAY', 'NIGHT'].includes(shift)) {\n    node.warn('Cannot schedule shift end: invalid production date or shift.');\n    return null;\n}\nconst year = Number(match[1]), month = Number(match[2]) - 1, day = Number(match[3]);\nconst date = new Date(year, month, day);\nif (date.getFullYear() !== year || date.getMonth() !== month || date.getDate() !== day) {\n    node.warn('Cannot schedule shift end: invalid production date.');\n    return null;\n}\nconst endHour = shift === 'DAY' ? (ot ? 20 : 16) : (ot ? 8 : 0);\nconst endMinute = ot ? 0 : (shift === 'DAY' ? 15 : 30);\nconst deadline = new Date(year, month, day + (shift === 'NIGHT' ? 1 : 0), endHour, endMinute);\nglobal.set('shiftEndAt', deadline.getTime());\nglobal.set('shiftActive', true);\nreturn msg;\n", 'check if shift end': '// Python owns machine-counter finalization; this clock ends the UI session.\nconst deadline = global.get(\'shiftEndAt\');\nif (global.get(\'shiftActive\') !== true || !Number.isFinite(deadline)) return null;\nif (Date.now() < deadline) return null;\n// Consume before broadcasting, even with no dashboard connected.\nglobal.set(\'shiftActive\', false);\nmsg.topic = "trigger_auto_end_shift";\nmsg.payload = { value: true };\nreturn msg;\n'}
 
@@ -53,7 +58,7 @@ def update(nodes):
     for n in nodes:
         if "wires" in n:
             n["wires"] = [[t for t in ws if t not in removed] for ws in n["wires"]]
-    return nodes
+    return _ui_module.add_shift_ui(nodes)
 
 
 if __name__ == "__main__":

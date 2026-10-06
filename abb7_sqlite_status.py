@@ -55,6 +55,11 @@ def main():
             print(f"Model output: {counters.get('total_output', 0)}")
             print(f"Shift output: {counters.get('shift_total_output', 0)}")
             print(f"Reject total: {counters.get('total_rejects', 0)}")
+            print(f"Scheduled reset: {shift.get('scheduled_end_at')}")
+            pending = state.get("pending_shift_form")
+            print(f"Pending shift: {pending.get('shift') if isinstance(pending, dict) else 'None'}")
+            if isinstance(pending, dict):
+                print(f"Pending date/hours: {pending.get('prodDate')} / {pending.get('workingTime')}")
 
         print("Outbox events:")
         for status in ("PENDING", "SENDING", "SENT", "DEAD_LETTER"):
