@@ -253,10 +253,10 @@ out of Git. Run the Pi and Node-RED in the local Malaysia timezone.
 
 ## Test forms, early shifts, and resend
 
-Use **Test mode** on the shift form for previews. Preview does not send MQTT,
-change the live shift or its counters, write shift records, or overwrite the
-browser's saved production form. Switch Test mode off to confirm a live shift.
-Test-marked commands are also ignored by Python.
+The Test mode switch and test-preview button are hidden on the production
+shift form. Confirm submits a live shift. Python and the Node-RED submission
+gate still ignore explicitly test-marked commands, so test messages cannot
+change production state.
 
 Forms entered before their scheduled start are saved as pending in SQLite when
 persistence is available. Python finalizes the outgoing shift first, enforces the
@@ -286,8 +286,12 @@ writable SQLite database.
 ## Home and automatic shift-end navigation
 
 At shift end Python broadcasts the end decision. Node-RED returns connected
-operators to **Shift Details**, alongside the existing dashboard cleanup.
-The Home button on **Hourly Checksheet** opens Shift Details. Home on Shift
+operators to **Smart Checksheet**, alongside the existing dashboard cleanup.
+The Home button on **Hourly Checksheet** opens Smart Checksheet. Home on Shift
 Details, Condition, Reject, and Downtime opens Hourly Checksheet. Home only
 navigates; it does not submit a form, change machine mode, or reset production.
 Regenerate and deploy your private Node-RED export to apply these buttons.
+
+Home and automatic return messages use the actual `ui-page.name` values required
+by Dashboard `ui-control`: Smart Checksheet and Hourly Checksheet. URL paths are
+not used as page names. Existing menu labels are preserved.

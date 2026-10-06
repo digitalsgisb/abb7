@@ -1,5 +1,6 @@
 """Add isolated form preview and Python-authoritative shift routing to private flows."""
 import copy
+import re
 
 
 GATE = """if (!['form_data', 'resend_active_shift'].includes(msg.topic)) return null;
@@ -29,6 +30,8 @@ def add_shift_ui(nodes):
     front = next((n for n in nodes if n.get('name') == 'front'), None)
     if front is None:
         return nodes
+    front['format'] = re.sub(r'\s*<v-switch\b[^>]*v-model="testMode"[^>]*></v-switch>', '', front['format'])
+    front['format'] = front['format'].replace("{{ testMode ? 'PREVIEW TEST' : 'CONFIRM LIVE SHIFT' }}", 'CONFIRM LIVE SHIFT')
     main = next(n for n in nodes if n.get('name') == 'main')
     # Derive the line from the existing API node, never from user-entered form data.
     api = next(n for n in nodes if n.get('name') == 'node.js_endShift')
@@ -78,14 +81,13 @@ def add_shift_ui(nodes):
         node['x'], node['y'] = 300 + i * 200, 1040
 
     template = front['format']
-    banner = '''    <v-switch v-model="testMode" label="Test mode — preview only" color="amber" hide-details></v-switch>
-    <v-alert v-if="testMode" type="warning" class="mb-3">TEST MODE: preview only. No live shift or production records will be changed.</v-alert>
+    banner = '''    <v-alert v-if="testMode" type="warning" class="mb-3">TEST MODE: preview only. No live shift or production records will be changed.</v-alert>
     <v-btn :disabled="testMode" @click="send({topic: 'resend_active_shift', payload: {}})" class="mb-3">Resend active shift details</v-btn>
     <v-alert v-if="formFeedback" type="info" class="mb-3">{{ formFeedback }}</v-alert>
 '''
     template = template.replace('    <v-form ref="conversionForm"', banner + '    <v-form ref="conversionForm"', 1)
     template = template.replace('      formData: {', "      testMode: false,\n      formFeedback: '',\n      formData: {", 1)
-    template = template.replace('        CONFIRM', "        {{ testMode ? 'PREVIEW TEST' : 'CONFIRM LIVE SHIFT' }}", 1)
+    template = template.replace('        CONFIRM', "        CONFIRM LIVE SHIFT", 1)
     template = template.replace('      handler(newValue) {', '      handler(newValue) {\n        if (this.testMode) return;', 1)
     template = template.replace('  watch: {', '''  watch: {
     msg(newMsg) {

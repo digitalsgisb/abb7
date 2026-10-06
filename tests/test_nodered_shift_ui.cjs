@@ -14,6 +14,8 @@ async function main() {
   }
   const component = name => new Function(named(name).format.match(/<script>([\s\S]*?)<\/script>/)[1]
     .replace('export default', 'return'))();
+  assert(!named('front').format.includes('<v-switch v-model="testMode"'));
+  assert(!named('front').format.includes('PREVIEW TEST'));
   const front = component('front');
   const dashboard = component('main');
   const messages = [];
@@ -52,9 +54,9 @@ async function main() {
   assert.equal(decide({payload: {status: 'active', source_payload: {}, navigate_to_hourly: false}})[2], null);
   const ended = decide({payload: {status: 'ended'}});
   assert.equal(ended[3].topic, 'trigger_auto_end_shift');
-  const detailPage = nodes.find(n => n.type === 'ui-page' && n.name === 'Shift Details');
+  const detailPage = nodes.find(n => n.type === 'ui-page' && n.name === 'Smart Checksheet');
   const hourlyPage = nodes.find(n => n.type === 'ui-page' && n.name === 'Hourly Checksheet');
-  assert.equal(ended[4].payload.page, detailPage.path);
+  assert.equal(ended[4].payload.page, detailPage.name);
   const ackNode = named('Apply accepted shift only');
   assert.equal(ackNode.outputs, ackNode.wires.length);
   assert.equal(byId.get(ackNode.wires[4][0]).type, 'ui-control');
@@ -63,7 +65,7 @@ async function main() {
     assert(template.format.includes('mdi-home'), `No Home button on ${name}`);
     const routerNode = byId.get(template.wires[0][0]);
     const routeHome = new Function('msg', routerNode.func);
-    const destination = name === 'main' ? detailPage.path : hourlyPage.path;
+    const destination = name === 'main' ? detailPage.name : hourlyPage.name;
     const homeMessage = {topic: 'go_home', payload: {}, _client: {socketId: 'example'}};
     const homeResult = routeHome(homeMessage);
     assert.equal(homeResult[0].payload.page, destination);

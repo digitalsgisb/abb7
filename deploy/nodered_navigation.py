@@ -13,6 +13,25 @@ def add_navigation(nodes):
     detail_page = by_id[by_id[front['group']]['page']]
     hourly_page = by_id[by_id[main['group']]['page']]
     detail_path, hourly_path = detail_page['path'], hourly_page['path']
+    # ui-control resolves page names, not URL paths. Restore the original menu label.
+    if detail_page['name'] == 'Shift Details':
+        detail_page['name'] = 'Smart Checksheet'
+    detail_name, hourly_name = detail_page['name'], hourly_page['name']
+    aliases = {detail_path: detail_name, 'Shift Details': detail_name, hourly_path: hourly_name}
+    for node in nodes:
+        for field in ('func', 'format'):
+            if field not in node:
+                continue
+            def replace_page(match):
+                target = aliases.get(match[3])
+                if target is None:
+                    return match[0]
+                if field == 'format':
+                    literal = "'" + target.replace("\\", "\\\\").replace("'", "\\'") + "'"
+                else:
+                    literal = json.dumps(target)
+                return match[1] + literal
+            node[field] = re.sub(r"(page:\s*)(['\"])([^'\"]+)\2", replace_page, node[field])
     prefix = front['id'] + '-home-'
     if prefix + 'control' in by_id:
         return nodes
@@ -20,12 +39,11 @@ def add_navigation(nodes):
     control.update(id=prefix + 'control', name='Home and shift-end navigation',
                    z=front['z'], wires=[[]], x=1050, y=1160)
     control.pop('g', None)
-    detail_page['name'] = 'Shift Details'
     nodes.append(control)
     for index, template in enumerate([n for n in nodes if n['type'] == 'ui-template'
                                       and n.get('name') in ('front', 'main', 'Condition', 'Reject', 'Downtime Log UI')]):
-        destination = detail_path if template['id'] == main['id'] else hourly_path
-        hint = 'Shift Details' if template['id'] == main['id'] else 'Hourly Checksheet'
+        destination = detail_name if template['id'] == main['id'] else hourly_name
+        hint = detail_name if template['id'] == main['id'] else hourly_name
         button = (f'\n    <div class="d-flex justify-end mb-2">'
                   f'<v-btn color="cyan" variant="outlined" '
                   f'@click="send({{topic: \'go_home\', payload: {{page: \'{destination}\'}}}})" '
@@ -38,7 +56,7 @@ def add_navigation(nodes):
             raise ValueError(f"Cannot place Home button in {template.get('name')}")
         # Delayed client cleanup must land on the same page as the server broadcast.
         template['format'] = re.sub(r"(page:\s*)(['\"])Smart Checksheet\2",
-                                    lambda match: match[1] + json.dumps(detail_path), template['format'])
+                                    lambda match: match[1] + json.dumps(detail_name), template['format'])
         router_id = prefix + template['id']
         original = [target for output in template['wires'] for target in output]
         router = {'id': router_id, 'type': 'function', 'z': template['z'],
@@ -56,7 +74,7 @@ def add_navigation(nodes):
     ack['func'] = ack['func'].replace(
         "{topic: 'trigger_auto_end_shift', payload: {value: true}}];",
         "{topic: 'trigger_auto_end_shift', payload: {value: true}}, "
-        f"{{payload: {{page: {json.dumps(detail_path)}}}}}];")
+        f"{{payload: {{page: {json.dumps(detail_name)}}}}}];")
     ack['outputs'] = 5
     ack['wires'].append([control['id']])
     # Activation keeps its existing form routes; absent output five means no navigation.
