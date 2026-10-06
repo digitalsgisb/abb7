@@ -17,7 +17,7 @@ from abb7_shift_schedule import (
 # ==========================================
 # PIN CONFIGURATION & SETUP
 # ==========================================
-SENSOR_PIN = 27
+SENSOR_PIN = 17
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(SENSOR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)

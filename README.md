@@ -9,7 +9,7 @@ the AI TOP ATOM PC.
 ## How it works
 
 ```text
-Production sensor (GPIO 22)
+Production sensor (GPIO 17)
   -> abb7.py
   -> local MQTT broker (Node-RED controls and live dashboard)
   -> Google Apps Script (production checksheet and PDF)
@@ -56,7 +56,7 @@ activity; this does not reconstruct sensor activity during a power outage.
 ## Runtime assumptions
 
 - Raspberry Pi OS with Python 3.
-- The production sensor uses BCM GPIO pin `22`.
+- The production sensor uses BCM GPIO pin `17`.
 - Mosquitto is available at `localhost:1883`.
 - Node-RED and InfluxDB run locally when their dashboard/history features are used.
 - The Atom ingestion endpoint is `http://172.19.3.72:8088/api/v1/events`.
