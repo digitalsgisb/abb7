@@ -350,3 +350,10 @@ and HenkatenTablet. The last page is managed outside these machine exports and
 must already exist on the deployed dashboard. Preserve those other flow tabs
 when replacing the machine flow. Hidden sidebar entries can still be navigation
 destinations; this update preserves their visibility settings.
+
+Cancel on Reject and Downtime returns the originating browser to **Smart
+Checksheet**. Reject cancellation clears the draft without submitting a reject.
+Downtime cancellation clears the shared session; a running timer also returns to
+Normal. Idle cancellation still sends the navigation acknowledgement, and
+repeated cancellation commands cannot duplicate it. Successful downtime logging
+continues returning to Hourly Checksheet.

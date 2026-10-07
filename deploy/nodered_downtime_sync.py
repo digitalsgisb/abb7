@@ -15,7 +15,7 @@ if (p.event || p.mode_changed) flow.set('downtimeEffectKeys', [...seen, key].sli
 const log = !duplicate && p.log ? {topic: 'downtime_data', payload: p.log} : null;
 const mode = !duplicate && p.mode_changed ? {topic: 'mode_update', payload: p.mode} : null;
 const navigate = !duplicate && ['logged', 'cancelled'].includes(p.event) ?
-    {payload: {page: 'Hourly Checksheet'}, ...(p.client ? {_client: p.client} : {})} : null;
+    {payload: {page: p.event === 'cancelled' ? 'Smart Checksheet' : 'Hourly Checksheet'}, ...(p.client ? {_client: p.client} : {})} : null;
 return [state, log, mode, navigate];
 """
 
@@ -37,6 +37,8 @@ def add_downtime_sync(nodes):
     downtime['format'] = downtime['format'].replace('@update:model-value="if (!isSessionLocked) formData.durationMinutes = $event"', '@update:model-value="setManualDuration"')
     if 'setManualDuration(value)' not in downtime['format'] and 'collectData() {' in downtime['format']:
         downtime['format'] = downtime['format'].replace('collectData() {', 'setManualDuration(value) {if (!this.isSessionLocked) this.formData.durationMinutes = Number(value);},\n    collectData() {', 1)
+    if prefix + 'result' in by_id:
+        by_id[prefix + 'result']['func'] = STATE
     if prefix + 'result-in' in by_id:
         # Upgrade an already-synchronized export without duplicating its routing.
         source = main['format'].replace('v-model="machineMode"', ':model-value="machineMode"', 1)

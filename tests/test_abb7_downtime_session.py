@@ -22,6 +22,19 @@ class SharedDowntimeTests(unittest.TestCase):
         return self.command(empty_session(), "start", {"downtimeCategory": "Machine",
                            "machineIssue": "Sensor", "presetTime": preset}, command_id="start")[0]
 
+    def test_cancel_idle_emits_navigation_once_without_changing_mode(self):
+        before = empty_session()
+        before["data"] = {"downtimeCategory": "Machine"}
+        state, effects = self.command(before, "cancel", command_id="cancel-idle")
+        self.assertEqual(state["status"], "idle")
+        self.assertEqual(state["data"], {})
+        self.assertEqual(effects["event"], "cancelled")
+        self.assertIsNone(effects["mode"])
+        self.assertIsNone(effects["log"])
+        replay, repeated = self.command(state, "cancel", command_id="cancel-idle")
+        self.assertEqual(replay, state)
+        self.assertIsNone(repeated["event"])
+
     def test_editing_category_does_not_change_machine_mode(self):
         state, effects = self.command(empty_session(), "update", {"downtimeCategory": "Machine"})
         self.assertEqual(state["status"], "idle")

@@ -93,6 +93,9 @@ def transition(previous, command, now_ms, shift_id, automatic=False):
         if action == "cancel" and state["status"] == "idle":
             state["data"] = {}
             state["revision"] += 1
+            effects["event"] = "cancelled"
+            if command_id:
+                state["commands"] = (state.get("commands", []) + [command_id])[-64:]
             return state, effects
         if action == "log" and state["status"] == "idle":
             data = dict(command.get("data", {}))

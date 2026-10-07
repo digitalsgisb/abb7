@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const nodes = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-const named = name => nodes.find(n => n.name === name && n.type !== 'ui-page');
+const named = name => nodes.find(n => n.name === name && n.type === 'ui-template') || nodes.find(n => n.name === name && !['ui-page', 'ui-group'].includes(n.type));
 const component = name => new Function(named(name).format.match(/<script>([\s\S]*?)<\/script>/)[1].replace('export default', 'return'))();
 const down = component('Downtime Log UI');
 const makeDevice = () => {
@@ -86,4 +86,22 @@ const duplicate = broadcast({payload: response}, flow);
 assert.equal(duplicate[1], null);
 assert.equal(duplicate[2], null);
 assert.equal(duplicate[3], null);
+const cancelResult = broadcast({payload: {...response, event: 'cancelled', log: null,
+  state: {...response.state, revision: 20}}}, flow);
+assert.equal(cancelResult[3].payload.page, 'Smart Checksheet');
+assert.equal(cancelResult[3]._client.socketId, 'tablet');
+assert.equal(cancelResult[1], null, 'Cancel unexpectedly logged downtime');
+const idleCancelResult = broadcast({payload: {...response, event: 'cancelled', log: null,
+  mode_changed: false, state: {...response.state, revision: 21, status: 'idle'}}}, flow);
+assert.equal(idleCancelResult[3].payload.page, 'Smart Checksheet');
+const reject = component('Reject');
+const rejectMessages = [];
+const rejectDevice = {...reject.data(), send: msg => rejectMessages.push(msg)};
+rejectDevice.resetForm = reject.methods.resetForm.bind(rejectDevice);
+reject.methods.cancelReject.call(rejectDevice);
+assert.deepEqual(rejectMessages, [{topic: 'navigate', payload: {page: 'Smart Checksheet'}}]);
+const rejectHome = byId.get(named('Reject').wires[0][0]);
+const rejectSwitch = byId.get(rejectHome.wires[1][0]);
+const rejectNavIndex = rejectSwitch.rules.findIndex(r => r.v === 'navigate');
+assert(rejectSwitch.wires[rejectNavIndex].some(id => byId.get(id).type === 'ui-control'));
 console.log('PASS: two-device timer sync, navigation without downtime, shared stop, broadcast scope, duplicate-log protection');

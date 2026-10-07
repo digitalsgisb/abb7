@@ -41,6 +41,10 @@ def add_navigation(nodes):
     for existing in nodes:
         if existing.get('name') == 'Home route: main' and navigation_branch not in existing.get('func', ''):
             existing['func'] = existing['func'].replace('return [null, msg];', navigation_branch + 'return [null, msg];')
+    reject = next((n for n in nodes if n.get('type') == 'ui-template' and n.get('name') == 'Reject'), None)
+    if reject:
+        reject['format'] = re.sub(r'cancelReject\(\)\s*\{[\s\S]*?\n\s*},',
+            "cancelReject() {\n        this.send({ topic: \"navigate\", payload: { page: 'Smart Checksheet' } });\n        this.resetForm();\n      },", reject['format'], count=1)
     prefix = front['id'] + '-home-'
     if prefix + 'control' in by_id:
         return nodes
