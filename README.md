@@ -341,3 +341,12 @@ node tests/test_nodered_vue_templates.cjs updated-flow.json
 This catches invalid HTML attribute quoting and invalid event expressions that
 JavaScript-only checks miss. Dashboard cleanup uses the supported `unmounted`
 hook to clear browser intervals when navigating away.
+
+Hourly navigation buttons are routed by `Home route: main` directly to
+`Home and shift-end navigation` (`ui-control`). Browsing a page does not require
+the browser's setup-confirmed flag. Submission validation remains separate from
+navigation. Destinations are Condition, Reject Checksheet, Downtime Checksheet,
+and HenkatenTablet. The last page is managed outside these machine exports and
+must already exist on the deployed dashboard. Preserve those other flow tabs
+when replacing the machine flow. Hidden sidebar entries can still be navigation
+destinations; this update preserves their visibility settings.

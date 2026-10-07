@@ -35,6 +35,12 @@ def add_navigation(nodes):
                     literal = json.dumps(target)
                 return match[1] + literal
             node[field] = re.sub(r"(page:\s*)(['\"])([^'\"]+)\2", replace_page, node[field])
+    # Navigation is read-only: a missing browser setup flag must not silently block it.
+    main['format'] = main['format'].replace("    navigate(targetPage) {\n      if (!this.isSetupConfirmed) return;", "    navigate(targetPage) {")
+    navigation_branch = "if (msg.topic === 'navigation') return [msg, null];\n"
+    for existing in nodes:
+        if existing.get('name') == 'Home route: main' and navigation_branch not in existing.get('func', ''):
+            existing['func'] = existing['func'].replace('return [null, msg];', navigation_branch + 'return [null, msg];')
     prefix = front['id'] + '-home-'
     if prefix + 'control' in by_id:
         return nodes
@@ -66,7 +72,9 @@ def add_navigation(nodes):
                   'name': f"Home route: {template.get('name')}", 'outputs': 2,
                   'func': "if (msg.topic === 'go_home') {\n"
                           f"    msg.payload = {{page: {json.dumps(destination)}}};\n"
-                          "    return [msg, null];\n}\nreturn [null, msg];\n",
+                          "    return [msg, null];\n}\n" +
+                          (navigation_branch if template['id'] == main['id'] else "") +
+                          "return [null, msg];\n",
                   'noerr': 0, 'initialize': '', 'finalize': '', 'libs': [],
                   'x': 700, 'y': 1160 + index * 60,
                   'wires': [[control['id']], original]}

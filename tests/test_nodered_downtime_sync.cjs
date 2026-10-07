@@ -43,7 +43,7 @@ const main = component('main');
 assert.equal(typeof down.unmounted, 'function', 'Downtime cleanup uses an unsupported hook');
 assert.equal(typeof main.unmounted, 'function', 'Clock cleanup uses an unsupported hook');
 const mainMessages = [];
-const mainDevice = {...main.data(), isSetupConfirmed: true, send: msg => mainMessages.push(msg)};
+const mainDevice = {...main.data(), isSetupConfirmed: false, send: msg => mainMessages.push(msg)};
 main.methods.navigate.call(mainDevice, 'Downtime Checksheet');
 assert.deepEqual(mainMessages.map(m => m.topic), ['navigation']);
 assert(!main.watch.machineMode, 'Mode state updates can echo commands');

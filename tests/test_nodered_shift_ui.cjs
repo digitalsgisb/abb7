@@ -6,6 +6,17 @@ async function main() {
   const nodes = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   const named = name => nodes.find(node => node.name === name);
   const byId = new Map(nodes.map(node => [node.id, node]));
+  const mainHome = nodes.find(n => n.name === 'Home route: main');
+  const routeMainHome = new Function('msg', mainHome.func);
+  for (const page of ['Condition', 'Reject Checksheet', 'Downtime Checksheet', 'HenkatenTablet']) {
+    const command = {topic: 'navigation', payload: {page}, _client: {socketId: 'clicked-device'}};
+    const result = routeMainHome(command);
+    assert.equal(result[0], command, 'Navigation fell into production command routing');
+    assert.equal(result[1], null);
+    assert.equal(byId.get(mainHome.wires[0][0]).type, 'ui-control');
+    assert.equal(result[0]._client.socketId, 'clicked-device');
+  }
+
   for (const node of nodes.filter(n => n.type === 'ui-template')) {
     assert(!/page:\s*"Smart Checksheet"/.test(node.format || ''), 'Double-quoted page literal breaks Home click attribute');
   }
