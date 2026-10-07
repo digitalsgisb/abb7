@@ -6,17 +6,13 @@ async function main() {
   const nodes = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   const named = name => nodes.find(node => node.name === name);
   const byId = new Map(nodes.map(node => [node.id, node]));
-  const mainHome = nodes.find(n => n.name === 'Home route: main');
-  const routeMainHome = new Function('msg', mainHome.func);
-  for (const page of ['Condition', 'Reject Checksheet', 'Downtime Checksheet', 'HenkatenTablet']) {
-    const command = {topic: 'navigation', payload: {page}, _client: {socketId: 'clicked-device'}};
-    const result = routeMainHome(command);
-    assert.equal(result[0], command, 'Navigation fell into production command routing');
-    assert.equal(result[1], null);
-    assert.equal(byId.get(mainHome.wires[0][0]).type, 'ui-control');
-    assert.equal(result[0]._client.socketId, 'clicked-device');
-  }
-
+  const hourlyMain = nodes.find(n => n.type === 'ui-template' && n.name === 'main');
+  const hourlySwitch = byId.get(hourlyMain.wires[0][0]);
+  assert.equal(hourlySwitch.type, 'switch');
+  assert.equal(hourlySwitch.property, 'topic');
+  const navOutput = hourlySwitch.rules.findIndex(r => r.v === 'navigation');
+  assert(hourlySwitch.wires[navOutput].some(id => byId.get(id).type === 'ui-control'));
+  assert(hourlySwitch.wires[navOutput].some(id => byId.get(id).name === 'Hourly navigation to ui-control'));
   for (const node of nodes.filter(n => n.type === 'ui-template')) {
     assert(!/page:\s*"Smart Checksheet"/.test(node.format || ''), 'Double-quoted page literal breaks Home click attribute');
   }
@@ -74,7 +70,7 @@ async function main() {
   const ackNode = named('Apply accepted shift only');
   assert.equal(ackNode.outputs, ackNode.wires.length);
   assert.equal(byId.get(ackNode.wires[4][0]).type, 'ui-control');
-  for (const name of ['main', 'front', 'Condition', 'Reject', 'Downtime Log UI']) {
+  for (const name of ['front', 'Condition', 'Reject', 'Downtime Log UI']) {
     const template = nodes.find(n => n.type === 'ui-template' && n.name === name);
     assert(template.format.includes('mdi-home'), `No Home button on ${name}`);
     const routerNode = byId.get(template.wires[0][0]);

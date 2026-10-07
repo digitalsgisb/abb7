@@ -90,3 +90,32 @@ def add_navigation(nodes):
     ack['wires'].append([control['id']])
     # Activation keeps its existing form routes; absent output five means no navigation.
     return nodes
+
+
+def restore_hourly_switch_route(nodes):
+    """Keep main wired directly to its original msg.topic switch."""
+    main = next((n for n in nodes if n.get('type') == 'ui-template' and n.get('name') == 'main'), None)
+    route = next((n for n in nodes if n.get('type') == 'switch' and
+                  any(r.get('v') == 'navigation' for r in n.get('rules', [])) and
+                  any(r.get('v') == 'machine_mode' for r in n.get('rules', []))), None)
+    if main is None or route is None:
+        return nodes
+    main['wires'] = [[route['id']]]
+    main['format'] = main['format'].replace("topic: 'go_home'", "topic: 'navigation'")
+    gate = next((n for n in nodes if n.get('name') == 'Route shared commands: main'), None)
+    if gate and not any(r.get('v') == 'downtime_command' for r in route['rules']):
+        route['rules'].append({'t': 'eq', 'v': 'downtime_command', 'vt': 'str'})
+        route['wires'].append([gate['id']])
+        route['outputs'] = len(route['rules'])
+    # Stop intercepting navigation before the user's original switch.
+    nodes = [n for n in nodes if n.get('name') != 'Home route: main']
+    debug_id = main['id'] + '-navigation-debug'
+    if not any(n['id'] == debug_id for n in nodes):
+        nodes.append({'id': debug_id, 'type': 'debug', 'z': main['z'],
+                      'name': 'Hourly navigation to ui-control', 'active': True,
+                      'tosidebar': True, 'console': False, 'tostatus': False,
+                      'complete': 'true', 'targetType': 'full', 'x': 1050, 'y': 1320, 'wires': []})
+    index = next(i for i, r in enumerate(route['rules']) if r.get('v') == 'navigation')
+    if debug_id not in route['wires'][index]:
+        route['wires'][index].append(debug_id)
+    return nodes

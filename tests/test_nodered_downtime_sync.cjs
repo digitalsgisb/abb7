@@ -59,12 +59,9 @@ for (const mode of ['Normal', 'Rest']) {
   assert(named('main').format.includes(`@click="modeChanged('${mode}')"`), 'Missing explicit mode button handler');
 }
 const byId = new Map(nodes.map(n => [n.id, n]));
-const home = byId.get(named('main').wires[0][0]);
-const gate = byId.get(home.wires[1][0]);
-const routeCommand = new Function('msg', gate.func);
-const routed = routeCommand({topic: 'machine_mode', payload: 'Rest'});
-assert.equal(routed[1].payload, 'Rest');
-const route = byId.get(gate.wires[1][0]);
+const route = byId.get(named('main').wires[0][0]);
+assert.equal(route.type, 'switch');
+assert.equal(route.property, 'topic');
 const modeIndex = route.rules.findIndex(r => r.v === 'machine_mode');
 assert(route.wires[modeIndex].some(id => byId.get(id).topic === 'nodered/mode'), 'Rest did not reach Python mode topic');
 

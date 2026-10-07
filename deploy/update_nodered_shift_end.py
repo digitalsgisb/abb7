@@ -69,6 +69,7 @@ def update(nodes):
         if "wires" in n:
             n["wires"] = [[t for t in ws if t not in removed] for ws in n["wires"]]
     nodes = _down_module.add_downtime_sync(_nav_module.add_navigation(_ui_module.add_shift_ui(nodes)))
+    nodes = _nav_module.restore_hourly_switch_route(nodes)
     # Dashboard ui-template supports unmounted, not beforeUnmount.
     for node in nodes:
         if node.get("type") == "ui-template" and "format" in node:
