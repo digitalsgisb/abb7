@@ -8,6 +8,8 @@ import threading
 import paho.mqtt.client as mqtt
 import requests
 
+from abb7_downtime_session import empty_session, transition as downtime_transition
+
 from abb7_persistence import ABB7OutboxSender, ABB7SQLiteStore
 from abb7_shift_schedule import (
     calculate_shift_end_datetime,
@@ -135,6 +137,7 @@ recovered_from_sqlite = False
 shift_entry_window_started_at = None
 shift_entry_window_ends_at = None
 pending_shift_form = None
+downtime_session = empty_session()
 shift_state_lock = threading.RLock()
 last_production_day = (datetime.now() - timedelta(hours=PRODUCTION_DAY_BOUNDARY_HOUR)).date()
 
@@ -212,6 +215,7 @@ def build_runtime_snapshot():
         "schema_version": 1,
         "current_shift": dict(current_shift),
         "pending_shift_form": pending_shift_form,
+        "downtime_session": downtime_session,
         "current_mode": current_mode,
         "current_status": current_status,
         "last_sent_hour": last_sent_hour,
@@ -319,7 +323,7 @@ def restore_runtime_state():
     global total_output, shift_total_output, hourly_output, total_rejects
     global hourly_rest_time, lost_time_this_hour, base_time_this_hour
     global current_cycle_time, current_mode, current_status
-    global last_sent_hour, current_shift, pending_shift_form
+    global last_sent_hour, current_shift, pending_shift_form, downtime_session
     global sensor_blocked, force_delay, recovered_from_sqlite
     global shift_entry_window_started_at, shift_entry_window_ends_at
 
@@ -337,6 +341,7 @@ def restore_runtime_state():
         checkpoint_runtime_state(force=True, reason="first startup")
         return False
 
+    downtime_session = snapshot.get("downtime_session") or empty_session()
     pending_shift_form = snapshot.get("pending_shift_form")
     if not isinstance(pending_shift_form, dict):
         pending_shift_form = None
@@ -473,7 +478,10 @@ def expire_shift_entry_window(moment=None):
 
 
 def reset_shift_data(save_checkpoint=True):
-    global current_shift
+    global current_shift, current_mode
+    if globals().get("downtime_session", {}).get("status") in {"running", "stopped"}:
+        process_downtime_command({"action": "shift_end"}, automatic=True)
+    current_mode = "NORMAL"
 
     print("\n[EVENT] Executing Shift Data Reset...")
     reset_production_runtime_counters()
@@ -596,6 +604,8 @@ def reset_stale_shift_after_startup(moment=None):
 
 
 def execute_end_shift(hour_slot_override=None, end_reason="MANUAL SHIFT END"):
+    if downtime_session.get("status") in {"running", "stopped"}:
+        process_downtime_command({"action": "shift_end"}, automatic=True)
     ending_shift_id = current_shift["shift_id"]
     ending_form = dict(current_shift)
 
@@ -757,7 +767,7 @@ def on_connect(client, userdata, flags, rc):
                       (MQTT_TOPIC_NR_REJECT, 0), (MQTT_TOPIC_NR_DOWNTIME, 0), 
                       (MQTT_TOPIC_NR_ENDSHIFT, 0), (MQTT_TOPIC_MODE, 0),
                       (MQTT_TOPIC_PARAM_CONDITION, 0),
-                      (MQTT_TOPIC_ADJUST_COUNT, 0)]) # <--- ADDED SUBSCRIPTION HERE
+                      (MQTT_TOPIC_ADJUST_COUNT, 0), ("nodered/downtime_session", 1)]) # <--- ADDED SUBSCRIPTION HERE
     client.publish(
         MQTT_TOPIC_STATUS,
         json.dumps({
@@ -976,6 +986,83 @@ def advance_shift_schedule(moment=None):
                 publish_shift_form_result("rejected", form, str(exc))
     return changed
 
+
+def record_downtime(data):
+    global current_mode, force_delay
+    print(f"\n[MQTT EVENT] Downtime Data Received")
+    if current_mode != MODE_NORMAL:
+        print(f"\n[STATE CHANGE] Downtime logged. Auto-reverting mode: {current_mode} -> {MODE_NORMAL}")
+        current_mode = MODE_NORMAL
+        force_delay = True # TRIGGER: Auto-skip loading on next product detection
+
+    row_data = [
+        current_shift["shift_id"], get_hour_slot(),
+        data.get("category", ""), data.get("code", ""),
+        data.get("durationMinutes", ""), data.get("description", ""), data.get("remarks", "")
+    ]
+    print(f" +--> QUEUING DOWNTIME: {row_data}")
+    google_sheets_queue.append({"tab": "Downtime_Data", "row": row_data})
+    if current_shift["shift_id"] != "NO PROD":
+        checkpoint_and_queue_event(
+            "downtime.recorded",
+            {
+                "shift_id": current_shift["shift_id"],
+                "line_code": LINE_CODE,
+                "hour_slot": get_hour_slot(),
+                "category": data.get("category", ""),
+                "code": data.get("code", ""),
+                "duration_minutes": data.get("durationMinutes", ""),
+                "description": data.get("description", ""),
+                "remarks": data.get("remarks", ""),
+                "action_taken": data.get("actionTaken", ""),
+            },
+            event_id=data.get("event_id"),
+        )
+    else:
+        checkpoint_runtime_state(force=True, reason="downtime without active shift")
+
+
+def process_downtime_command(command, automatic=False):
+    global downtime_session, current_mode, force_delay
+    with shift_state_lock:
+        now_ms = int(time.time() * 1000)
+        result = {"state": downtime_session, "server_ms": now_ms, "mode": current_mode,
+                  "event": None, "log": None, "error": "", "command_id": command.get("command_id"),
+                  "client": command.get("client")}
+        try:
+            updated, effects = downtime_transition(downtime_session, command, now_ms,
+                                                    current_shift.get("shift_id", "NO PROD"), automatic)
+            if effects["mode"] == MODE_MODEL_CHANGE and current_mode != MODE_MODEL_CHANGE:
+                push_hourly_to_sheets(is_model_change=True)
+            downtime_session = updated
+            if effects["mode"] is not None:
+                current_mode = effects["mode"]
+                if current_mode == MODE_NORMAL:
+                    force_delay = True
+            if effects["log"] is not None:
+                record_downtime(effects["log"])
+            elif command.get("action") != "get":
+                checkpoint_runtime_state(force=True, reason="shared downtime session")
+            result.update(state=downtime_session)
+            result.update(effects)
+            result["mode_changed"] = effects["mode"] is not None
+            # Null effect means preserve actual mode in the state reply.
+            result["mode"] = current_mode
+        except (ValueError, TypeError) as exc:
+            result["error"] = str(exc)
+        try:
+            mqtt_client.publish(f"{LINE_CODE.lower()}/downtime_result", json.dumps(result), qos=1)
+        except Exception as exc:
+            print(f"[DOWNTIME ACK ERROR] {exc}")
+        return result
+
+
+def finish_due_downtime():
+    with shift_state_lock:
+        if downtime_session.get("status") == "running" and downtime_session.get("target_ms") is not None:
+            if time.time() * 1000 >= downtime_session["target_ms"]:
+                process_downtime_command({"action": "expire"}, automatic=True)
+
 def on_message(client, userdata, msg):
     global current_mode, current_shift, total_rejects, force_delay
     global hourly_output, total_output, shift_total_output, current_cycle_time
@@ -991,7 +1078,10 @@ def on_message(client, userdata, msg):
             print("[TEST] Command ignored; production state is unchanged.")
             return
 
-        if topic == MQTT_TOPIC_SHIFT_FORM and is_json:
+        if topic == "nodered/downtime_session" and is_json:
+            process_downtime_command(data)
+
+        elif topic == MQTT_TOPIC_SHIFT_FORM and is_json:
             receive_shift_form(data)
 
         elif topic == MQTT_TOPIC_SETUP and is_json:
@@ -1060,36 +1150,7 @@ def on_message(client, userdata, msg):
                 checkpoint_runtime_state(force=True, reason="reject without active shift")
 
         elif topic == MQTT_TOPIC_NR_DOWNTIME and is_json:
-            print(f"\n[MQTT EVENT] Downtime Data Received")
-            if current_mode != MODE_NORMAL:
-                print(f"\n[STATE CHANGE] Downtime logged. Auto-reverting mode: {current_mode} -> {MODE_NORMAL}")
-                current_mode = MODE_NORMAL
-                force_delay = True # TRIGGER: Auto-skip loading on next product detection
-                
-            row_data = [
-                current_shift["shift_id"], get_hour_slot(), 
-                data.get("category", ""), data.get("code", ""), 
-                data.get("durationMinutes", ""), data.get("description", ""), data.get("remarks", "")
-            ]
-            print(f" +--> QUEUING DOWNTIME: {row_data}")
-            google_sheets_queue.append({"tab": "Downtime_Data", "row": row_data})
-            if current_shift["shift_id"] != "NO PROD":
-                checkpoint_and_queue_event(
-                    "downtime.recorded",
-                    {
-                        "shift_id": current_shift["shift_id"],
-                        "line_code": LINE_CODE,
-                        "hour_slot": get_hour_slot(),
-                        "category": data.get("category", ""),
-                        "code": data.get("code", ""),
-                        "duration_minutes": data.get("durationMinutes", ""),
-                        "description": data.get("description", ""),
-                        "remarks": data.get("remarks", ""),
-                    },
-                    event_id=data.get("event_id"),
-                )
-            else:
-                checkpoint_runtime_state(force=True, reason="downtime without active shift")
+            record_downtime(data)
 
         elif topic == MQTT_TOPIC_NR_ENDSHIFT:
             if isinstance(data, dict):
@@ -1151,6 +1212,9 @@ def on_message(client, userdata, msg):
                 checkpoint_runtime_state(force=True, reason="parameters without active shift")
 
         elif topic == MQTT_TOPIC_MODE:
+            if downtime_session.get("status") == "running":
+                print("[MODE WARNING] Stop the shared downtime timer before changing mode.")
+                return
             new_mode = str(data).upper()
             valid_modes = [MODE_NORMAL, MODE_DOWN, MODE_MODEL_CHANGE, MODE_REST, MODE_PLANNED_STOP]
             if new_mode in valid_modes:
@@ -1299,6 +1363,8 @@ def publish_live_data():
         "scheduled_end_at": current_shift.get("scheduled_end_at"),
         "scheduled_start_at": current_shift.get("scheduled_start_at"),
         "pending_shift": pending_shift_form,
+        "downtime_session": downtime_session,
+        "server_ms": int(time.time() * 1000),
         "persistence_enabled": persistence_store is not None,
         "supervisor": current_shift["supervisor"],
         "leader": current_shift["leader"],
@@ -1384,6 +1450,8 @@ try:
         # Python owns both end and start boundaries, including pending forms.
         if advance_shift_schedule(now):
             continue
+
+        finish_due_downtime()
 
         # 1.6 Check for Standard Hourly Push (at minute 00)
         if (

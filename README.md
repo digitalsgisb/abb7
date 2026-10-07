@@ -295,3 +295,37 @@ Regenerate and deploy your private Node-RED export to apply these buttons.
 Home and automatic return messages use the actual `ui-page.name` values required
 by Dashboard `ui-control`: Smart Checksheet and Hourly Checksheet. URL paths are
 not used as page names. Existing menu labels are preserved.
+
+## Shared downtime timer
+
+Deploy the updated Python service and regenerate/import the private Node-RED flow
+**together**, preferably between shifts. All PCs and tablets using the same ABB
+dashboard share one downtime session; ABB2 and ABB7 remain separate machines.
+
+Opening Downtime or selecting a reason leaves machine mode unchanged. Start
+Timer starts downtime. Stop Timer immediately returns to Normal and keeps the
+stopped duration available to log. Log or Cancel also returns to Normal. A stopped
+session must be logged or cancelled before another can start. Historical manual
+logs remain available with a positive duration and action taken.
+
+Python owns countdown completion and closes/logs an active session at shift end,
+so closing the browser does not interrupt the timer. Devices render the same
+server timestamp, reason, action, and session state. Stale concurrent commands
+are rejected, repeated command IDs cannot produce a second log, and received
+mode updates do not echo new mode commands. The dashboard reports connection
+errors and disables timer controls when server updates are missing.
+
+Session recovery requires writable SQLite persistence. The elapsed timer uses
+wall-clock time across restarts; it does not reconstruct sensor counts or machine
+operating time while the service was off. Check the persistence warning before
+relying on restart recovery.
+
+Validate a generated flow without contacting production services:
+
+```bash
+node tests/test_nodered_downtime_sync.cjs updated-flow.json
+```
+
+The checks simulate two devices and verify timer sync, shared stop, navigation
+without a mode change, broadcast targeting, and duplicate-log protection. Also
+verify PC/tablet operation on the deployed dashboard after importing the flow.

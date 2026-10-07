@@ -77,13 +77,15 @@ class ABB7StartupSmokeTest(unittest.TestCase):
                         "shift_total_output": 428,
                         "total_rejects": 2,
                     },
+                    "downtime_session": {"revision": 4, "status": "stopped", "id": "session",
+                                         "data": {}, "elapsed_ms": 120000},
                     "pending_shift_form": {"prodDate": "2099-07-22", "shift": "Night",
                                            "workingTime": "8:00 PM to 8:00 AM", "overtime": True},
                     "timers": {},
                     "cycle": {},
                     "current_mode": "NORMAL",
                     "current_status": 0,
-                    "last_sent_hour": -1,
+                    "last_sent_hour": datetime.now().hour,
                     "last_reset_day": -1,
                     "force_delay": False,
                 },
@@ -167,6 +169,7 @@ class ABB7StartupSmokeTest(unittest.TestCase):
             self.assertEqual(namespace["shift_total_output"], 428)
             self.assertTrue(namespace["recovered_from_sqlite"])
             self.assertEqual(namespace["pending_shift_form"]["prodDate"], "2099-07-22")
+            self.assertEqual(namespace["downtime_session"]["elapsed_ms"], 120000)
 
     def test_shift_end_queues_partial_hour_before_pdf(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -174,6 +177,7 @@ class ABB7StartupSmokeTest(unittest.TestCase):
             store = ABB7SQLiteStore(database_path)
 
             module_globals = {
+                "downtime_session": {"status": "idle"},
                 "current_shift": {
                     "shift_id": "20260724-Day-Line1",
                     "line": "Line 1",
