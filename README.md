@@ -342,14 +342,11 @@ This catches invalid HTML attribute quoting and invalid event expressions that
 JavaScript-only checks miss. Dashboard cleanup uses the supported `unmounted`
 hook to clear browser intervals when navigating away.
 
-Hourly navigation uses the original `main` -> `Route Template Output` (switch
-on `msg.topic`) -> `ui-control` route. The existing `navigation` rule sends
-`msg.payload.page` without an intermediate Home function. The Hourly Home button
-also sends `navigation`. Shared downtime commands use a separate switch output.
-The active Debug node `Hourly navigation to ui-control` shows only navigation
-clicks, including the page and originating client, for deployment diagnosis.
-
-Browsing a page does not require the browser's setup-confirmed flag. Destinations
-remain Condition, Reject Checksheet, Downtime Checksheet, and HenkatenTablet.
-HenkatenTablet is managed outside these exports; preserve its existing flow tab
-when replacing the machine flow. Sidebar visibility settings are preserved.
+Hourly navigation buttons are routed by `Home route: main` directly to
+`Home and shift-end navigation` (`ui-control`). Browsing a page does not require
+the browser's setup-confirmed flag. Submission validation remains separate from
+navigation. Destinations are Condition, Reject Checksheet, Downtime Checksheet,
+and HenkatenTablet. The last page is managed outside these machine exports and
+must already exist on the deployed dashboard. Preserve those other flow tabs
+when replacing the machine flow. Hidden sidebar entries can still be navigation
+destinations; this update preserves their visibility settings.

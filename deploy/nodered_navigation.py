@@ -92,30 +92,39 @@ def add_navigation(nodes):
     return nodes
 
 
-def restore_hourly_switch_route(nodes):
-    """Keep main wired directly to its original msg.topic switch."""
+def restore_main_ui_control_route(nodes):
+    """Upgrade switch-only diagnostic exports back to the shared ui-control route."""
     main = next((n for n in nodes if n.get('type') == 'ui-template' and n.get('name') == 'main'), None)
-    route = next((n for n in nodes if n.get('type') == 'switch' and
-                  any(r.get('v') == 'navigation' for r in n.get('rules', [])) and
-                  any(r.get('v') == 'machine_mode' for r in n.get('rules', []))), None)
-    if main is None or route is None:
+    front = next((n for n in nodes if n.get('type') == 'ui-template' and n.get('name') == 'front'), None)
+    if main is None or front is None:
         return nodes
-    main['wires'] = [[route['id']]]
-    main['format'] = main['format'].replace("topic: 'go_home'", "topic: 'navigation'")
-    gate = next((n for n in nodes if n.get('name') == 'Route shared commands: main'), None)
-    if gate and not any(r.get('v') == 'downtime_command' for r in route['rules']):
-        route['rules'].append({'t': 'eq', 'v': 'downtime_command', 'vt': 'str'})
-        route['wires'].append([gate['id']])
-        route['outputs'] = len(route['rules'])
-    # Stop intercepting navigation before the user's original switch.
-    nodes = [n for n in nodes if n.get('name') != 'Home route: main']
+    by_id = {n['id']: n for n in nodes}
+    control_id = front['id'] + '-home-control'
+    if control_id not in by_id:
+        return nodes
     debug_id = main['id'] + '-navigation-debug'
-    if not any(n['id'] == debug_id for n in nodes):
-        nodes.append({'id': debug_id, 'type': 'debug', 'z': main['z'],
-                      'name': 'Hourly navigation to ui-control', 'active': True,
-                      'tosidebar': True, 'console': False, 'tostatus': False,
-                      'complete': 'true', 'targetType': 'full', 'x': 1050, 'y': 1320, 'wires': []})
-    index = next(i for i, r in enumerate(route['rules']) if r.get('v') == 'navigation')
-    if debug_id not in route['wires'][index]:
-        route['wires'][index].append(debug_id)
+    nodes = [n for n in nodes if n['id'] != debug_id]
+    for n in nodes:
+        if 'wires' in n:
+            n['wires'] = [[t for t in output if t != debug_id] for output in n['wires']]
+    home_id = front['id'] + '-home-' + main['id']
+    if home_id in by_id:
+        return nodes
+    route = next(n for n in nodes if n.get('type') == 'switch' and
+                 any(r.get('v') == 'navigation' for r in n.get('rules', [])) and
+                 any(r.get('v') == 'machine_mode' for r in n.get('rules', [])))
+    for i in reversed(range(len(route['rules']))):
+        if route['rules'][i].get('v') == 'downtime_command':
+            route['rules'].pop(i)
+            route['wires'].pop(i)
+    route['outputs'] = len(route['rules'])
+    gate = next(n for n in nodes if n.get('name') == 'Route shared commands: main')
+    gate['wires'][1] = [route['id']]
+    detail = by_id[by_id[front['group']]['page']]['name']
+    home = {'id': home_id, 'type': 'function', 'z': main['z'], 'name': 'Home route: main',
+            'outputs': 2, 'noerr': 0, 'initialize': '', 'finalize': '', 'libs': [],
+            'func': "if (msg.topic === 'go_home') {\n    msg.payload = {page: " + json.dumps(detail) + "};\n    return [msg, null];\n}\nif (msg.topic === 'navigation') return [msg, null];\nreturn [null, msg];\n",
+            'x': 700, 'y': 1160, 'wires': [[control_id], [gate['id']]]}
+    nodes.append(home)
+    main['wires'] = [[home_id]]
     return nodes
