@@ -45,6 +45,27 @@ const mainDevice = {...main.data(), isSetupConfirmed: true, send: msg => mainMes
 main.methods.navigate.call(mainDevice, 'Downtime Checksheet');
 assert.deepEqual(mainMessages.map(m => m.topic), ['navigation']);
 assert(!main.watch.machineMode, 'Mode state updates can echo commands');
+mainMessages.length = 0;
+main.methods.modeChanged.call(mainDevice, 'Rest');
+assert.deepEqual(mainMessages, [{topic: 'machine_mode', payload: 'Rest'}]);
+main.methods.modeChanged.call(mainDevice, 'Normal');
+assert.equal(mainMessages[1].payload, 'Normal');
+mainDevice.sharedDowntimeRunning = true;
+main.methods.modeChanged.call(mainDevice, 'Rest');
+assert.equal(mainMessages.length, 2, 'Rest bypassed a running downtime session');
+for (const mode of ['Normal', 'Rest']) {
+  assert(named('main').format.includes(`@click="modeChanged('${mode}')"`), 'Missing explicit mode button handler');
+}
+const byId = new Map(nodes.map(n => [n.id, n]));
+const home = byId.get(named('main').wires[0][0]);
+const gate = byId.get(home.wires[1][0]);
+const routeCommand = new Function('msg', gate.func);
+const routed = routeCommand({topic: 'machine_mode', payload: 'Rest'});
+assert.equal(routed[1].payload, 'Rest');
+const route = byId.get(gate.wires[1][0]);
+const modeIndex = route.rules.findIndex(r => r.v === 'machine_mode');
+assert(route.wires[modeIndex].some(id => byId.get(id).topic === 'nodered/mode'), 'Rest did not reach Python mode topic');
+
 // No client-side countdown completion or shift-end handler may log independently.
 assert(!named('Downtime Log UI').format.includes('topic: "mode_update"'));
 assert(!named('Downtime Log UI').format.includes('handleAutoEndShift'));

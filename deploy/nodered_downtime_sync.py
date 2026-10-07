@@ -35,6 +35,15 @@ def add_downtime_sync(nodes):
     line = 'abb7' if any(n.get('topic') == 'abb7/shift_form_result' for n in nodes) else 'abb2'
     prefix = line + '-downtime-'
     if prefix + 'result-in' in by_id:
+        # Upgrade an already-synchronized export without duplicating its routing.
+        source = main['format'].replace('v-model="machineMode"', ':model-value="machineMode"', 1)
+        source = source.replace(' @update:modelValue="modeChanged"', '', 1)
+        for mode in ('Normal', 'Rest'):
+            if f"modeChanged('{mode}')" not in source:
+                source = source.replace(f'<v-btn value="{mode}"', f'<v-btn value="{mode}" :disabled="sharedDowntimeRunning" @click="modeChanged(\'{mode}\')"', 1)
+        source = source.replace("      this.send({topic: 'downtime_command', payload: {action: 'mode', data: {mode: newMode},\n        revision: this.downtimeRevision, command_id: `${Date.now()}-${Math.random()}`}});",
+                                "      // Normal/Rest use the established mode route, independent of timer revisions.\n      this.send({topic: 'machine_mode', payload: newMode});")
+        main['format'] = source
         return nodes
     # Retain the layout and reason lookups; replace all browser-local lifecycle code.
     script = Path(__file__).with_name('downtime_component.js').read_text(encoding='utf-8')
@@ -99,11 +108,14 @@ def add_downtime_sync(nodes):
     source = main['format']
     source = re.sub(r',\s*machineMode\(newMode\)\s*\{\s*if \(this.isSetupConfirmed\) \{\s*this.modeChanged\(newMode\);\s*}\s*}', '', source, count=1)
     source = source.replace('      storageWarning:', '      downtimeRevision: 0,\n      sharedDowntimeRunning: false,\n      applyingSharedMode: false,\n      storageWarning:', 1)
-    source = source.replace('v-model="machineMode" mandatory', 'v-model="machineMode" :disabled="sharedDowntimeRunning" mandatory', 1)
+    source = source.replace('v-model="machineMode" mandatory', ':model-value="machineMode" :disabled="sharedDowntimeRunning" mandatory', 1)
+    source = source.replace(' @update:modelValue="modeChanged"', '', 1)
+    for mode in ('Normal', 'Rest'):
+        source = source.replace(f'<v-btn value="{mode}"', f'<v-btn value="{mode}" :disabled="sharedDowntimeRunning" @click="modeChanged(\'{mode}\')"', 1)
     source = source.replace('    modeChanged(newMode) {\n      this.send({ topic: "machine_mode", payload: newMode });\n    },', '''    modeChanged(newMode) {
       if (this.applyingSharedMode || this.sharedDowntimeRunning) return;
-      this.send({topic: 'downtime_command', payload: {action: 'mode', data: {mode: newMode},
-        revision: this.downtimeRevision, command_id: `${Date.now()}-${Math.random()}`}});
+      // Normal/Rest use the established mode route, independent of timer revisions.
+      this.send({topic: 'machine_mode', payload: newMode});
     },''', 1)
     source = source.replace('        const p = newMsg.payload;', '''        const p = newMsg.payload;
         if (newMsg.topic === 'downtime_state') {
