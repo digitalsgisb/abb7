@@ -55,7 +55,7 @@ The Raspberry Pi environment settings will be:
 
 ```text
 ABB7_API_ENABLED=true
-ABB7_API_EVENTS_URL=http://172.19.3.72:8088/api/v1/events
+ABB7_API_EVENTS_URL=http://172.19.3.62:8088/api/v1/events
 ABB7_API_KEY=replace-with-a-private-key
 ```
 

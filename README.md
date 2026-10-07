@@ -59,8 +59,8 @@ activity; this does not reconstruct sensor activity during a power outage.
 - The production sensor uses BCM GPIO pin `17`.
 - Mosquitto is available at `localhost:1883`.
 - Node-RED and InfluxDB run locally when their dashboard/history features are used.
-- The Atom ingestion endpoint is `http://172.19.3.72:8088/api/v1/events`.
-- The Atom health endpoint is `http://172.19.3.72:8088/health`.
+- The Atom ingestion endpoint is `http://172.19.3.62:8088/api/v1/events`.
+- The Atom health endpoint is `http://172.19.3.62:8088/health`.
 
 Most MQTT command topics are intentionally local and generic. This is safe when
 each Raspberry Pi runs its own broker. Namespace the topics before using a
@@ -104,7 +104,7 @@ Add:
 
 ```env
 ABB7_API_ENABLED=true
-ABB7_API_EVENTS_URL=http://172.19.3.72:8088/api/v1/events
+ABB7_API_EVENTS_URL=http://172.19.3.62:8088/api/v1/events
 ABB7_API_KEY=<same private value as INGEST_API_KEY on the Atom PC>
 ABB7_SQLITE_PATH=/var/lib/abb7/abb7_state.db
 ```
@@ -140,7 +140,7 @@ journalctl -u "abb7@$USER.service" -n 100 --no-pager
 Check Atom connectivity from the Raspberry Pi:
 
 ```bash
-curl --fail --silent --show-error http://172.19.3.72:8088/health
+curl --fail --silent --show-error http://172.19.3.62:8088/health
 ```
 
 Check the local MQTT status topic:
