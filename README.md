@@ -329,3 +329,15 @@ node tests/test_nodered_downtime_sync.cjs updated-flow.json
 The checks simulate two devices and verify timer sync, shared stop, navigation
 without a mode change, broadcast targeting, and duplicate-log protection. Also
 verify PC/tablet operation on the deployed dashboard after importing the flow.
+
+The generated Vue markup can also be compiled before deployment:
+
+```bash
+# Install @vue/compiler-dom in a separate validation directory, then set:
+VUE_COMPILER_PATH=/absolute/path/to/node_modules/@vue/compiler-dom \
+node tests/test_nodered_vue_templates.cjs updated-flow.json
+```
+
+This catches invalid HTML attribute quoting and invalid event expressions that
+JavaScript-only checks miss. Dashboard cleanup uses the supported `unmounted`
+hook to clear browser intervals when navigating away.

@@ -68,7 +68,12 @@ def update(nodes):
     for n in nodes:
         if "wires" in n:
             n["wires"] = [[t for t in ws if t not in removed] for ws in n["wires"]]
-    return _down_module.add_downtime_sync(_nav_module.add_navigation(_ui_module.add_shift_ui(nodes)))
+    nodes = _down_module.add_downtime_sync(_nav_module.add_navigation(_ui_module.add_shift_ui(nodes)))
+    # Dashboard ui-template supports unmounted, not beforeUnmount.
+    for node in nodes:
+        if node.get("type") == "ui-template" and "format" in node:
+            node["format"] = node["format"].replace("beforeUnmount()", "unmounted()")
+    return nodes
 
 
 if __name__ == "__main__":

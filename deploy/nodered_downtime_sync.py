@@ -34,6 +34,9 @@ def add_downtime_sync(nodes):
     main = next(n for n in nodes if n.get('type') == 'ui-template' and n.get('name') == 'main')
     line = 'abb7' if any(n.get('topic') == 'abb7/shift_form_result' for n in nodes) else 'abb2'
     prefix = line + '-downtime-'
+    downtime['format'] = downtime['format'].replace('@update:model-value="if (!isSessionLocked) formData.durationMinutes = $event"', '@update:model-value="setManualDuration"')
+    if 'setManualDuration(value)' not in downtime['format'] and 'collectData() {' in downtime['format']:
+        downtime['format'] = downtime['format'].replace('collectData() {', 'setManualDuration(value) {if (!this.isSessionLocked) this.formData.durationMinutes = Number(value);},\n    collectData() {', 1)
     if prefix + 'result-in' in by_id:
         # Upgrade an already-synchronized export without duplicating its routing.
         source = main['format'].replace('v-model="machineMode"', ':model-value="machineMode"', 1)
@@ -58,7 +61,7 @@ def add_downtime_sync(nodes):
     downtime['format'] = downtime['format'].replace('@click="toggleTimer" block', ':disabled="controlsDisabled || sessionStatus === \'stopped\'" @click="toggleTimer" block', 1)
     downtime['format'] = downtime['format'].replace('@click="cancelDowntime"', ':disabled="controlsDisabled" @click="cancelDowntime"', 1)
     downtime['format'] = downtime['format'].replace('<v-btn type="submit"', '<v-btn :disabled="controlsDisabled" type="submit"', 1)
-    downtime['format'] = downtime['format'].replace('v-model.number="formData.durationMinutes"', ':model-value="isSessionLocked ? Math.max(1, Math.ceil(elapsedMs / 60000)) : formData.durationMinutes" @update:model-value="if (!isSessionLocked) formData.durationMinutes = $event"', 1)
+    downtime['format'] = downtime['format'].replace('v-model.number="formData.durationMinutes"', ':model-value="isSessionLocked ? Math.max(1, Math.ceil(elapsedMs / 60000)) : formData.durationMinutes" @update:model-value="setManualDuration"', 1)
     downtime['format'] = downtime['format'].replace('label="Total Logged Duration (Mins) *"', ':readonly="isSessionLocked" label="Total Logged Duration (Mins) *"', 1)
     downtime['format'] = downtime['format'].replace(':disabled="timerRunning"', ':disabled="isSessionLocked || controlsDisabled"')
     downtime['format'] = downtime['format'].replace(':disabled="!formData.downtimeCategory"', ':disabled="!formData.downtimeCategory || isSessionLocked || controlsDisabled"')

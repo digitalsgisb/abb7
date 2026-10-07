@@ -17,7 +17,8 @@ def add_navigation(nodes):
     if detail_page['name'] == 'Shift Details':
         detail_page['name'] = 'Smart Checksheet'
     detail_name, hourly_name = detail_page['name'], hourly_page['name']
-    aliases = {detail_path: detail_name, 'Shift Details': detail_name, hourly_path: hourly_name}
+    aliases = {detail_path: detail_name, 'Shift Details': detail_name, hourly_path: hourly_name,
+               detail_name: detail_name, hourly_name: hourly_name}
     for node in nodes:
         for field in ('func', 'format'):
             if field not in node:
@@ -29,6 +30,8 @@ def add_navigation(nodes):
                 if field == 'format':
                     literal = "'" + target.replace("\\", "\\\\").replace("'", "\\'") + "'"
                 else:
+                    if match[3] == target:
+                        return match[0]
                     literal = json.dumps(target)
                 return match[1] + literal
             node[field] = re.sub(r"(page:\s*)(['\"])([^'\"]+)\2", replace_page, node[field])
@@ -56,7 +59,7 @@ def add_navigation(nodes):
             raise ValueError(f"Cannot place Home button in {template.get('name')}")
         # Delayed client cleanup must land on the same page as the server broadcast.
         template['format'] = re.sub(r"(page:\s*)(['\"])Smart Checksheet\2",
-                                    lambda match: match[1] + json.dumps(detail_name), template['format'])
+                                    lambda match: match[1] + "'" + detail_name.replace("'", "\\'") + "'", template['format'])
         router_id = prefix + template['id']
         original = [target for output in template['wires'] for target in output]
         router = {'id': router_id, 'type': 'function', 'z': template['z'],

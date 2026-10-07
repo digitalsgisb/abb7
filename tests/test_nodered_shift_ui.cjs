@@ -6,6 +6,9 @@ async function main() {
   const nodes = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   const named = name => nodes.find(node => node.name === name);
   const byId = new Map(nodes.map(node => [node.id, node]));
+  for (const node of nodes.filter(n => n.type === 'ui-template')) {
+    assert(!/page:\s*"Smart Checksheet"/.test(node.format || ''), 'Double-quoted page literal breaks Home click attribute');
+  }
   assert.equal(byId.size, nodes.length);
   for (const node of nodes) {
     for (const target of (node.wires || []).flat()) assert(byId.has(target), `Missing wire ${target}`);

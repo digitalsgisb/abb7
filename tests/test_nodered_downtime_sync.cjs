@@ -40,6 +40,8 @@ idle.device.setCategory('Machine');
 assert.equal(idle.messages.length, 0);
 assert(!idle.device.timerRunning);
 const main = component('main');
+assert.equal(typeof down.unmounted, 'function', 'Downtime cleanup uses an unsupported hook');
+assert.equal(typeof main.unmounted, 'function', 'Clock cleanup uses an unsupported hook');
 const mainMessages = [];
 const mainDevice = {...main.data(), isSetupConfirmed: true, send: msg => mainMessages.push(msg)};
 main.methods.navigate.call(mainDevice, 'Downtime Checksheet');

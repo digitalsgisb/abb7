@@ -17,7 +17,7 @@ export default {
     this.timerInterval = setInterval(() => this.renderSharedTime(), 200);
     this.sendCommand('get');
   },
-  beforeUnmount() {
+  unmounted() {
     clearInterval(this.timerInterval);
     clearTimeout(this.updateTimeout);
     clearTimeout(this.requestTimeout);
@@ -60,6 +60,7 @@ export default {
     },
   },
   methods: {
+    setManualDuration(value) {if (!this.isSessionLocked) this.formData.durationMinutes = Number(value);},
     collectData() {return {...this.formData, cleanReasonName: this.cleanReasonName};},
     sendCommand(action, data = {}) {
       clearTimeout(this.updateTimeout);
