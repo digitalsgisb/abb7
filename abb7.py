@@ -7,7 +7,7 @@ import os
 import threading
 import paho.mqtt.client as mqtt
 import requests
-#pijol was here
+#dell and afiq was here
 from abb7_downtime_session import empty_session, transition as downtime_transition
 
 from abb7_persistence import ABB7OutboxSender, ABB7SQLiteStore
