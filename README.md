@@ -1,6 +1,10 @@
 # ABB7 Production Tracker
 
 This repository is for **ABB 7 (ABB7)**. The sensor uses **BCM GPIO 17**.
+The production line label is **MF**. The installed Raspberry Pi 5 uses
+`rpi-lgpio` for the `RPi.GPIO` interface; do not install the conflicting
+`RPi.GPIO` package. See the GPIO repair steps in CHECKSHEET-SETUP.md if both
+packages are already installed.
 To connect this Pi to the tablet Smart Checksheet system, follow
 [CHECKSHEET-SETUP.md](CHECKSHEET-SETUP.md). That setup adds a separate event relay
 and uses ABB7's own MQTT broker, database and credentials.

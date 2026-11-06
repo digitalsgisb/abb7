@@ -22,6 +22,24 @@ live MQTT snapshots and supplies an independent durable event relay. ABB7 alread
 has its prefixed persistence and shift modules. The sensor remains on BCM GPIO 17;
 keep the existing wiring.
 
+### Raspberry Pi 5 GPIO dependency
+
+The ABB7 installation uses a Raspberry Pi 5. Use `rpi-lgpio`, which supplies the
+existing `RPi.GPIO` import. Do not install the separate `RPi.GPIO` package in the
+same environment: both packages provide that module and conflict.
+
+If both were installed, stop the existing sensor service, then repair its venv:
+
+```bash
+.venv/bin/python -m pip uninstall -y RPi.GPIO rpi-lgpio
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip check
+```
+
+Run these commands from the updated ABB7 checkout, then restart the existing
+sensor service. The sensor pin stays at BCM GPIO 17. Follow the
+[rpi-lgpio installation documentation](https://rpi-lgpio.readthedocs.io/en/latest/install.html).
+
 ## Private MQTT access
 
 Allow the AI PC to reach ABB7's broker using an authenticated private listener,
@@ -44,12 +62,12 @@ Add this entry to its machine configuration, substituting the actual address:
   "line": "ABB7",
   "mqttUrl": "mqtt://ABB7_PI_PRIVATE_IP:1883",
   "catalogPath": "abb7-catalog.json",
-  "productionLine": "Line 7"
+  "productionLine": "MF"
 }
 ```
 
-The configuration file is an array of entries. Verify `productionLine` against
-the existing ABB7 Node-RED shift form; do not change the shift ID convention.
+The configuration file is an array of entries. ABB7 is MF: retain
+`productionLine: "MF"` to preserve shift IDs such as `20261106-Day-MF`.
 Supply a verified ABB7 model/manpower catalog beside that file.
 
 Set backend-only environment values:
