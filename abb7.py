@@ -1353,6 +1353,7 @@ def publish_live_data():
 
     payload = {
         "shift_id": current_shift["shift_id"],
+        "line_code": LINE_CODE,
         "hour_slot": get_hour_slot(),
         "line": current_shift["line"],
         "date": current_shift["date"],

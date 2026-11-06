@@ -1,0 +1,17 @@
+[Unit]
+Description=Smart Checksheet durable event relay for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+EnvironmentFile=/etc/smartchecksheet-relay.env
+ExecStart=/usr/bin/python3 /opt/smartchecksheet/checksheet_event_relay.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

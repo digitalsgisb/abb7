@@ -1,4 +1,5 @@
 import os
+import json
 import runpy
 import sys
 import tempfile
@@ -18,6 +19,7 @@ class FakeMQTTClient:
     def __init__(self):
         self.on_connect = None
         self.on_message = None
+        self.published = []
 
     def will_set(self, *args, **kwargs):
         return None
@@ -35,7 +37,7 @@ class FakeMQTTClient:
         return None
 
     def publish(self, *args, **kwargs):
-        return None
+        self.published.append((args, kwargs))
 
     def subscribe(self, *args, **kwargs):
         return None
@@ -170,6 +172,20 @@ class ABB7StartupSmokeTest(unittest.TestCase):
             self.assertTrue(namespace["recovered_from_sqlite"])
             self.assertEqual(namespace["pending_shift_form"]["prodDate"], "2099-07-22")
             self.assertEqual(namespace["downtime_session"]["elapsed_ms"], 120000)
+
+            # Check the actual emitted snapshot used to select the machine in Checksheet.
+            script_globals = namespace["publish_live_data"].__globals__
+            script_globals["last_live_snapshot_publish"] = 0
+            payload = namespace["publish_live_data"]()
+            messages = [json.loads(args[1]) for args, _ in
+                        script_globals["mqtt_client"].published
+                        if args[0] == "smartchecksheet/live"]
+            self.assertEqual(namespace["SENSOR_PIN"], 17)
+            self.assertEqual(payload["line_code"], "ABB7")
+            self.assertTrue(messages)
+            self.assertEqual(messages[-1]["line_code"], "ABB7")
+            self.assertEqual(messages[-1]["hourly_output"], 73)
+            self.assertEqual(messages[-1]["total_product_count"], 428)
 
     def test_shift_end_queues_partial_hour_before_pdf(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

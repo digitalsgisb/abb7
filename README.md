@@ -1,5 +1,10 @@
 # ABB7 Production Tracker
 
+This repository is for **ABB 7 (ABB7)**. The sensor uses **BCM GPIO 17**.
+To connect this Pi to the tablet Smart Checksheet system, follow
+[CHECKSHEET-SETUP.md](CHECKSHEET-SETUP.md). That setup adds a separate event relay
+and uses ABB7's own MQTT broker, database and credentials.
+
 ABB7 is a Raspberry Pi production-tracking service for the ABB 7 line. It reads
 the production sensor, exchanges commands and live values with Node-RED over
 MQTT, writes production records to Google Sheets, keeps restart-safe state in
@@ -32,6 +37,9 @@ blocked until the sensor is observed clear.
 - `abb7_sqlite_status.py` — read-only SQLite health/status command.
 - `abb7appscript.js` — Google Apps Script checksheet and PDF logic.
 - `deploy/abb7@.service` — templated systemd service for Raspberry Pi OS.
+- `deploy/checksheet_event_relay.py` — independent durable event relay to Smart Checksheet.
+- `deploy/checksheet-relay@.service` — systemd template for the separate event relay.
+- `CHECKSHEET-SETUP.md` — ABB7 Pi and AI PC connection/commissioning instructions.
 - `tests/` — Python and Apps Script regression tests.
 - `SQLITE_RECOVERY_GUIDE.md` — recovery/outbox details and manual recovery steps.
 
@@ -199,6 +207,12 @@ Apps Script aggregation tests require Node.js:
 
 ```bash
 node tests/test_abb7_appscript.js
+```
+
+Independent Checksheet relay tests:
+
+```bash
+.venv/bin/python -m unittest discover -s deploy -p 'test_*.py' -v
 ```
 
 ## Push changes from the Windows PC
