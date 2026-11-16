@@ -181,7 +181,8 @@ def load_shift_form_runtime():
                                    "reset_production_runtime_counters", "production_day_key",
                                    "current_shift_matches_production_day",
                                    "force_production_day_reset", "apply_shift_form", "receive_shift_form",
-                                   "advance_shift_schedule", "get_current_shift_end_datetime"}]
+                                   "advance_shift_schedule", "get_current_shift_end_datetime",
+                                   "override_shift", "next_override_shift_id"}]
     constants = [node for node in tree.body if isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name)
                          and (target.id.startswith("MQTT_TOPIC_") or target.id == "LINE_CODE")
@@ -529,6 +530,62 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
         self.assertIn("production_day != last_production_day", source)
         self.assertIn("reset_stale_shift_after_startup()", source)
 
+
+
+class ABB7ShiftOverrideTests(unittest.TestCase):
+    def override(self, ns, **changes):
+        form = {"prodDate": "2026-10-06", "shift": "Day", "productionLine": "Line 1",
+                "workingTime": "8:00 AM to 4:15 PM", "overrideReason": "Wrong team", "event_id": "cmd-1"}
+        form.update(changes)
+        return form
+
+    def test_next_override_shift_id(self):
+        ns, _clock, _events = load_shift_form_runtime()
+        nxt = ns["next_override_shift_id"]
+        self.assertEqual(nxt("20261006-Day-Line1", "NO PROD"), "20261006-Day-Line1")
+        self.assertEqual(nxt("20261006-Night-Line1", "20261006-Day-Line1"), "20261006-Night-Line1")
+        self.assertEqual(nxt("20261006-Day-Line1", "20261006-Day-Line1"), "20261006-Day-Line1-R2")
+        self.assertEqual(nxt("20261006-Day-Line1", "20261006-Day-Line1-R2"), "20261006-Day-Line1-R3")
+
+    def test_override_ends_active_shift_and_starts_same_shift_from_zero(self):
+        ns, clock, events = load_shift_form_runtime()
+        ended = []
+        ns["execute_end_shift"] = lambda **kwargs: (ended.append(kwargs), ns["reset_shift_data"]())
+        submit_shift_form(ns)
+        clock["now"] = datetime(2026, 10, 6, 10, 0)
+        ns.update(shift_total_output=40, total_output=40, hourly_output=7)
+        ns["on_message"](None, None, SimpleNamespace(topic=ns["MQTT_TOPIC_SHIFT_OVERRIDE"],
+                                                     payload=json.dumps(self.override(ns, supervisor="New")).encode()))
+        self.assertEqual(ended, [{"end_reason": "OVERRIDE SHIFT END"}])
+        self.assertEqual(ns["current_shift"]["shift_id"], "20261006-Day-Line1-R2")
+        self.assertEqual(ns["current_shift"]["supervisor"], "New")
+        self.assertEqual((ns["shift_total_output"], ns["total_output"], ns["hourly_output"]), (0, 0, 0))
+        self.assertEqual(ns["current_shift"]["scheduled_end_at"], "2026-10-06T16:15:00")
+        self.assertEqual(events[-1][0], "shift.started")
+
+    def test_override_can_start_night_before_its_usual_time(self):
+        ns, clock, _events = load_shift_form_runtime()
+        ns["execute_end_shift"] = lambda **kwargs: ns["reset_shift_data"]()
+        submit_shift_form(ns)
+        clock["now"] = datetime(2026, 10, 6, 14, 0)
+        self.assertTrue(ns["override_shift"](self.override(ns, shift="Night", workingTime="4:15 PM to 12:30 AM"), clock["now"]))
+        self.assertEqual(ns["current_shift"]["shift_id"], "20261006-Night-Line1")
+        self.assertEqual(ns["current_shift"]["scheduled_start_at"], "2026-10-06T14:00:00")
+        self.assertIsNone(ns["pending_shift_form"])
+
+    def test_override_without_reason_or_after_shift_end_changes_nothing(self):
+        ns, clock, events = load_shift_form_runtime()
+        results = []
+        ns["publish_shift_form_result"] = lambda *args, **kwargs: results.append(args[0])
+        submit_shift_form(ns)
+        clock["now"] = datetime(2026, 10, 6, 10, 0)
+        ns["shift_total_output"] = 9
+        self.assertFalse(ns["override_shift"](self.override(ns, overrideReason=" "), clock["now"]))
+        self.assertFalse(ns["override_shift"](self.override(ns, prodDate="2026-10-05"), clock["now"]))
+        self.assertEqual(results[-2:], ["rejected", "rejected"])
+        self.assertEqual(ns["current_shift"]["shift_id"], "20261006-Day-Line1")
+        self.assertEqual(ns["shift_total_output"], 9)
+        self.assertEqual(len(events), 1)
 
 if __name__ == "__main__":
     unittest.main()

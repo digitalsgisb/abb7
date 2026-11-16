@@ -48,7 +48,7 @@ ABB7 must use its own broker: generic command topics are shared across lines.
 
 The Checksheet broker account needs write access to `nodered/newshift`,
 `nodered/modeltarget`, `nodered/mode`, `nodered/adjust_count`, `nodered/reject`,
-`noderedparam/condition` and `nodered/downtime_session`; it needs read access to
+`noderedparam/condition`, `nodered/downtime_session` and `checksheet/shift_override`; it needs read access to
 `smartchecksheet/live`, `smartchecksheet/hourly` and `abb7/#`.
 
 ## AI PC configuration
