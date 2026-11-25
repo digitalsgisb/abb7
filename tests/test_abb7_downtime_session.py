@@ -132,6 +132,7 @@ class SharedDowntimeTests(unittest.TestCase):
                       STATE_CHECKPOINT_INTERVAL_SECONDS=5, persistence_store=store,
                       mqtt_client=SimpleNamespace(publish=lambda topic, data, **kw: published.append(json.loads(data))),
                       get_hour_slot=lambda: "8.00-9.00", shift_total_output=8)
+            ns.setdefault("hourly_plan_state", {"planned_lost": 0.0, "segment_started_at": None})
             exec(compile(ast.Module(body=functions, type_ignores=[]), SCRIPT_PATH, "exec"), ns)
             try:
                 started = ns["process_downtime_command"]({"action": "start", "revision": 0,

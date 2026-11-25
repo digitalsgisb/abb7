@@ -53,6 +53,7 @@ def load_reset_function():
             "current_shift": {"shift_id": "NO PROD", "model": "TEST"},
         }
     )
+    namespace.setdefault("hourly_plan_state", {"planned_lost": 0.0, "segment_started_at": None})
     exec(
         compile(ast.Module(body=[function], type_ignores=[]), SCRIPT_PATH, "exec"),
         namespace,
@@ -113,6 +114,7 @@ def load_boundary_functions(current_shift):
         "reset_shift_data": reset_shift,
         "checkpoint_runtime_state": checkpoint,
     }
+    namespace.setdefault("hourly_plan_state", {"planned_lost": 0.0, "segment_started_at": None})
     exec(
         compile(ast.Module(body=functions, type_ignores=[]), SCRIPT_PATH, "exec"),
         namespace,
@@ -159,6 +161,7 @@ def load_entry_window_functions():
         "reset_production_runtime_counters": reset_counters,
         "checkpoint_runtime_state": checkpoint,
     }
+    namespace.setdefault("hourly_plan_state", {"planned_lost": 0.0, "segment_started_at": None})
     exec(
         compile(ast.Module(body=functions, type_ignores=[]), SCRIPT_PATH, "exec"),
         namespace,
@@ -203,6 +206,7 @@ def load_shift_form_runtime():
         "calculate_shift_end_datetime": __import__("abb7_shift_schedule").calculate_shift_end_datetime,
         "checkpoint_and_queue_event": lambda *args, **kwargs: events.append(args),
     })
+    namespace.setdefault("hourly_plan_state", {"planned_lost": 0.0, "segment_started_at": None})
     exec(compile(ast.Module(body=constants + functions, type_ignores=[]),
                  SCRIPT_PATH, "exec"), namespace)
     namespace["reset_shift_data"]()
@@ -358,6 +362,7 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
             clock["now"] = datetime(2026, 10, 5, hour)
             namespace["expire_shift_entry_window"](clock["now"])
             namespace.update(now=clock["now"], loop_delta=60)
+            namespace.setdefault("hourly_plan_state", {"planned_lost": 0.0, "segment_started_at": None})
             exec(tick, namespace)
             self.assertEqual(namespace["total_machine_time"], 0)
             self.assertEqual(namespace["base_time_this_hour"], 0)
@@ -368,6 +373,7 @@ class ABB7ShiftRuntimeTests(unittest.TestCase):
             self.assertEqual(namespace[name], 0, name)
         self.assertEqual(namespace["shift_entry_window_started_at"], "2026-10-05T08:00:00")
         namespace.update(now=clock["now"] + timedelta(minutes=2), loop_delta=120)
+        namespace.setdefault("hourly_plan_state", {"planned_lost": 0.0, "segment_started_at": None})
         exec(tick, namespace)
         self.assertEqual(namespace["total_machine_time"], 120)
         self.assertEqual(rows, [])
